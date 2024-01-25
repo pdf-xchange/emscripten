@@ -20,10 +20,12 @@ size_t mbrtoc16(char16_t *restrict pc16, const char *restrict s, size_t n, mbsta
 	wchar_t wc;
 	size_t ret = mbrtowc(&wc, s, n, ps);
 	if (ret <= 4) {
+#if __WCHAR_MAX__ >= 0x10000U
 		if (wc >= 0x10000) {
 			*pending = (wc & 0x3ff) + 0xdc00;
 			wc = 0xd7c0 + (wc >> 10);
 		}
+#endif
 		if (pc16) *pc16 = wc;
 	}
 	return ret;

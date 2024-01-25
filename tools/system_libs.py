@@ -40,7 +40,9 @@ LIBC_SOCKETS = ['socket.c', 'socketpair.c', 'shutdown.c', 'bind.c', 'connect.c',
 # Setting EMCC_USE_NINJA=2 means that ninja will automatically be run for each library needed at
 # link time.
 USE_NINJA = int(os.environ.get('EMCC_USE_NINJA', '0'))
-
+WINDOWS = False
+if os.name == 'nt' or ('windows' in os.environ.get('SYSTEMROOT', '').lower()) or ('windows' in os.environ.get('COMSPEC', '').lower()):
+  WINDOWS = True
 
 def files_in_path(path, filenames):
   srcdir = utils.path_from_root(path)
@@ -65,6 +67,8 @@ def get_base_cflags(force_object_files=False, preprocess=True):
       flags += ['-DEMSCRIPTEN_DYNAMIC_LINKING']
   if settings.MEMORY64:
     flags += ['-Wno-experimental', '-sMEMORY64=' + str(settings.MEMORY64)]
+  if WINDOWS:
+    flags += ['-fshort-wchar', '-Wno-unused-command-line-argument']
   return flags
 
 

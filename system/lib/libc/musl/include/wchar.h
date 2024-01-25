@@ -29,13 +29,22 @@ extern "C" {
 #endif
 
 #include <bits/alltypes.h>
-
+#if __WCHAR_MAX__ >= 0x10000U
 #if L'\0'-1 > 0
 #define WCHAR_MAX (0xffffffffu+L'\0')
 #define WCHAR_MIN (0+L'\0')
 #else
 #define WCHAR_MAX (0x7fffffff+L'\0')
 #define WCHAR_MIN (-1-0x7fffffff+L'\0')
+#endif
+#else
+#if L'\0'-1 > 0
+#define WCHAR_MAX (0xffffu+L'\0')
+#define WCHAR_MIN (0+L'\0')
+#else
+#define WCHAR_MAX (0x7fff+L'\0')
+#define WCHAR_MIN (-1-0x7fff+L'\0')
+#endif
 #endif
 
 #if __cplusplus >= 201103L && !defined(__EMSCRIPTEN__)
@@ -47,7 +56,7 @@ extern "C" {
 #endif
 
 #undef WEOF
-#define WEOF 0xffffffffU
+#define WEOF ((wchar_t)0xffffffffU)
 
 wchar_t *wcscpy (wchar_t *__restrict, const wchar_t *__restrict);
 wchar_t *wcsncpy (wchar_t *__restrict, const wchar_t *__restrict, size_t);
