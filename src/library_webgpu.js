@@ -692,8 +692,6 @@ var LibraryWebGPU = {
 
   // Non-method functions
 
-  wgpuCreateInstance: (descriptor) => 1,
-
   wgpuGetInstanceFeatures: (featuresPtr) => {
     abort('TODO: wgpuGetInstanceFeatures unimplemented');
     return 0;
@@ -1285,7 +1283,6 @@ var LibraryWebGPU = {
 
     function makeBlendState(bsPtr) {
       if (!bsPtr) return undefined;
-      {{{ gpu.makeCheckDescriptor('bsPtr') }}}
       return {
         "alpha": makeBlendComponent(bsPtr + {{{ C_STRUCTS.WGPUBlendState.alpha }}}),
         "color": makeBlendComponent(bsPtr + {{{ C_STRUCTS.WGPUBlendState.color }}}),
@@ -2072,7 +2069,7 @@ var LibraryWebGPU = {
 
   wgpuTextureGetDimension: (textureId) => {
     var texture = WebGPU.mgrTexture.get(textureId);
-    return texture.dimension;
+    return WebGPU.TextureDimension.indexOf(texture.dimension);
   },
 
   wgpuTextureGetFormat: (textureId) => {
@@ -2411,9 +2408,6 @@ var LibraryWebGPU = {
   },
 
   // Instance
-
-  wgpuInstanceReference: (instance) => {}, // no-op
-  wgpuInstanceRelease: (instance) => {}, // no-op
 
   wgpuInstanceCreateSurface__deps: ['$findCanvasEventTarget'],
   wgpuInstanceCreateSurface: (instanceId, descriptor) => {

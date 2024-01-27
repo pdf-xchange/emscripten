@@ -407,7 +407,8 @@ class other(RunnerCore):
   @parameterized({
     '': ([],),
     # load a worker before startup to check ES6 modules there as well
-    'pthreads': (['-pthread', '-sPTHREAD_POOL_SIZE=1'],),
+    # pass -O2 to ensure the worker JS file is minified with Acorn
+    'pthreads': (['-O2', '-pthread', '-sPTHREAD_POOL_SIZE=1'],),
   })
   def test_export_es6(self, args, package_json):
     self.run_process([EMCC, test_file('hello_world.c'), '-sEXPORT_ES6',
@@ -1240,24 +1241,24 @@ f.close()
 
   def test_commons_link(self):
     create_file('a.h', r'''
-#if !defined(A_H)
-#define A_H
-extern int foo[8];
-#endif
-''')
+      #if !defined(A_H)
+      #define A_H
+      extern int foo[8];
+      #endif
+    ''')
     create_file('a.c', r'''
-#include "a.h"
-int foo[8];
-''')
+      #include "a.h"
+      int foo[8];
+    ''')
     create_file('main.c', r'''
-#include <stdio.h>
-#include "a.h"
+      #include <stdio.h>
+      #include "a.h"
 
-int main() {
-    printf("|%d|\n", foo[0]);
-    return 0;
-}
-''')
+      int main() {
+        printf("|%d|\n", foo[0]);
+        return 0;
+      }
+    ''')
 
     self.run_process([EMCC, '-o', 'a.o', '-c', 'a.c'])
     self.run_process([EMAR, 'rv', 'library.a', 'a.o'])
@@ -1285,7 +1286,7 @@ int main() {
     create_file('foobar.c', 'int main(){ return 0; }')
     os.symlink('foobar.c', 'foobar.xxx')
     err = self.expect_fail([EMCC, 'foobar.xxx', '-o', 'foobar.js'])
-    self.assertContained('unknown file type: foobar.xxx', err)
+    self.assertContained(['unknown file type: foobar.xxx', "archive member 'native.o' is neither Wasm object file nor LLVM bitcode"], err)
 
   def test_multiply_defined_libsymbols(self):
     create_file('libA.c', 'int mult() { return 1; }')
@@ -1466,7 +1467,7 @@ int f() {
                      clang_native.get_clang_native_args())
     self.run_process([EMAR, 'crs', 'libfoo.a', 'native.o'])
     stderr = self.expect_fail([EMCC, 'main.c', 'libfoo.a'])
-    self.assertContained('unknown file type', stderr)
+    self.assertContained(['unknown file type', "libfoo.a: archive member 'native.o' is neither Wasm object file nor LLVM bitcode"], stderr)
 
   def test_export_all(self):
     lib = r'''
@@ -2970,9 +2971,10 @@ int f() {
     'wasm64': ['-sMEMORY64', '-Wno-experimental'],
   })
   @parameterized({
+    # With no arguments we are effectively testing c++17 since it is the default.
     '': [],
-    # Ensure embind compiles under C++17 where "noexcept" became part of the function signature.
-    'cxx17': ['-std=c++17'],
+    # Ensure embind compiles under C++11 which is the miniumum supported version.
+    'cxx11': ['-std=c++11'],
     'o1': ['-O1'],
     'o2': ['-O2'],
     'o2_mem_growth': ['-O2', '-sALLOW_MEMORY_GROWTH', test_file('embind/isMemoryGrowthEnabled=true.cpp')],
@@ -3127,6 +3129,12 @@ int f() {
     self.run_process([EMCC, test_file('other/embind_tsgen.cpp'),
                       '-lembind', '--embind-emit-tsd', 'embind_tsgen.d.ts', '-fwasm-exceptions', '-sASSERTIONS'])
     self.assertFileContents(test_file('other/embind_tsgen.d.ts'), read_file('embind_tsgen.d.ts'))
+
+  def test_embind_jsgen_method_pointer_stability(self):
+    self.emcc_args += ['-lembind', '-sEMBIND_AOT']
+    # Test that when method pointers are allocated at different addresses that
+    # AOT JS generation still works correctly.
+    self.do_runf('other/embind_jsgen_method_pointer_stability.cpp', 'done')
 
   def test_emconfig(self):
     output = self.run_process([emconfig, 'LLVM_ROOT'], stdout=PIPE).stdout.strip()
@@ -6121,77 +6129,7 @@ This locale is not the C locale.
     test(['-sEXPORTED_RUNTIME_METHODS=[]', '-sEXPORTED_RUNTIME_METHODS=addRunDependency'], "Module['addRunDependency", "Module['waka")
 
   def test_stat_fail_alongtheway(self):
-    create_file('src.c', r'''
-#include <errno.h>
-#include <stdio.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <string.h>
-
-#define CHECK(expression) \
-  if(!(expression)) {                            \
-    error = errno;                               \
-    printf("FAIL: %s\n", #expression); fail = 1; \
-  } else {                                       \
-    error = errno;                               \
-    printf("pass: %s\n", #expression);           \
-  }                                              \
-
-int main() {
-  int error;
-  int fail = 0;
-  CHECK(mkdir("path", 0777) == 0);
-  CHECK(close(open("path/file", O_CREAT | O_WRONLY, 0644)) == 0);
-  {
-    struct stat st;
-    CHECK(stat("path", &st) == 0);
-    CHECK(st.st_mode = 0777);
-  }
-  {
-    struct stat st;
-    CHECK(stat("path/nosuchfile", &st) == -1);
-    printf("info: errno=%d %s\n", error, strerror(error));
-    CHECK(error == ENOENT);
-  }
-  {
-    struct stat st;
-    CHECK(stat("path/file", &st) == 0);
-    CHECK(st.st_mode = 0666);
-  }
-  {
-    struct stat st;
-    CHECK(stat("path/file/impossible", &st) == -1);
-    printf("info: errno=%d %s\n", error, strerror(error));
-    CHECK(error == ENOTDIR);
-  }
-  {
-    struct stat st;
-    CHECK(lstat("path/file/impossible", &st) == -1);
-    printf("info: errno=%d %s\n", error, strerror(error));
-    CHECK(error == ENOTDIR);
-  }
-  return fail;
-}
-''')
-    self.do_runf('src.c', r'''pass: mkdir("path", 0777) == 0
-pass: close(open("path/file", O_CREAT | O_WRONLY, 0644)) == 0
-pass: stat("path", &st) == 0
-pass: st.st_mode = 0777
-pass: stat("path/nosuchfile", &st) == -1
-info: errno=44 No such file or directory
-pass: error == ENOENT
-pass: stat("path/file", &st) == 0
-pass: st.st_mode = 0666
-pass: stat("path/file/impossible", &st) == -1
-info: errno=54 Not a directory
-pass: error == ENOTDIR
-pass: lstat("path/file/impossible", &st) == -1
-info: errno=54 Not a directory
-pass: error == ENOTDIR
-''')
+    self.do_other_test('test_stat_fail_alongtheway.c')
 
   def test_link_with_a_static(self):
     create_file('x.c', r'''
@@ -7388,7 +7326,7 @@ int main(int argc, char** argv) {
 
   def test_js_lib_native_deps_extra(self):
     # Similar to above but the JS symbol is not used by the native code.
-    # Instead is it explictly injected using `extraLibraryFuncs`.
+    # Instead is it explicitly injected using `extraLibraryFuncs`.
     create_file('lib.js', r'''
 addToLibrary({
   jsfunc__deps: ['raise'],
@@ -9120,26 +9058,6 @@ end
     # https://docs.python.org/3/library/codecs.html#encodings-and-unicode
     create_file('test.rsp', b'\xef\xbb\xbf--version', binary=True)
     self.run_process([EMCC, '@test.rsp'])
-
-  def test_archive_empty(self):
-    # This test added because we had an issue with the AUTO_ARCHIVE_INDEXES failing on empty
-    # archives (which inherently don't have indexes).
-    self.run_process([EMAR, 'crS', 'libfoo.a'])
-    self.run_process([EMCC, '-Werror', 'libfoo.a', test_file('hello_world.c')])
-
-  def test_archive_no_index(self):
-    create_file('foo.c', 'int foo = 1;')
-    self.run_process([EMCC, '-c', 'foo.c'])
-    self.run_process([EMCC, '-c', test_file('hello_world.c')])
-    # The `S` flag means don't add an archive index
-    self.run_process([EMAR, 'crS', 'libfoo.a', 'foo.o'])
-    # The llvm backend (link GNU ld and lld) doesn't support linking archives with no index.
-    # However we have logic that will automatically add indexes (unless running with
-    # NO_AUTO_ARCHIVE_INDEXES).
-    stderr = self.expect_fail([EMCC, '-sNO_AUTO_ARCHIVE_INDEXES', 'libfoo.a', 'hello_world.o'])
-    self.assertContained('libfoo.a: archive has no index; run ranlib to add one', stderr)
-    # The default behavior is to add archive indexes automatically.
-    self.run_process([EMCC, 'libfoo.a', 'hello_world.o'])
 
   def test_archive_non_objects(self):
     create_file('file.txt', 'test file')
@@ -12106,8 +12024,8 @@ int main () {
       }
     ''')
     self.do_runf('unincluded_malloc.c', (
-      "malloc() called but not included in the build - add '_malloc' to EXPORTED_FUNCTIONS",
-      "free() called but not included in the build - add '_free' to EXPORTED_FUNCTIONS"))
+      'malloc() called but not included in the build - add `_malloc` to EXPORTED_FUNCTIONS',
+      'free() called but not included in the build - add `_free` to EXPORTED_FUNCTIONS'), assert_all=True)
 
   def test_getrusage(self):
     self.do_runf('other/test_getrusage.c')
@@ -14226,7 +14144,7 @@ w:0,t:0x[0-9a-fA-F]+: formatted: 42
   def test_no_minify(self):
     # Test that comments are preserved with `--minify=0` is used, even in `-Oz` builds.
     # This allows the output of emscripten to be run through the closure compiler as
-    # as a seperate build step.
+    # as a separate build step.
     create_file('pre.js', '''
     /**
      * This comment should be preserved
@@ -14436,6 +14354,9 @@ addToLibrary({
     err = self.expect_fail([EMCC, '-c'])
     self.assertContained('clang: error: no input files', err)
 
+    err = self.expect_fail([EMCC])
+    self.assertContained('emcc: error: no input files', err)
+
   def test_embind_negative_enum_values(self):
     # Test if negative enum values are printed correctly and not overflown to
     # large values when CAN_ADDRESS_2GB is true.
@@ -14500,3 +14421,7 @@ addToLibrary({
     # "window.crypto.getRandomValues"
     self.assertContained(").randomBytes", js_out)
     self.assertContained("window.crypto.getRandomValues", js_out)
+
+  def test_wasm64_no_asan(self):
+    err = self.expect_fail([EMCC, test_file('hello_world.c'), '-sMEMORY64', '-fsanitize=address'])
+    self.assertContained('error: MEMORY64 does not yet work with ASAN', err)

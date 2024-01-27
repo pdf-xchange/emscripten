@@ -579,7 +579,7 @@ class Library:
       if not generate_only:
         run_ninja(build_dir)
     else:
-      # Use a seperate build directory to the ninja flavor so that building without
+      # Use a separate build directory to the ninja flavor so that building without
       # EMCC_USE_NINJA doesn't clobber the ninja build tree
       build_dir += '-tmp'
       utils.safe_ensure_dirs(build_dir)
@@ -1847,6 +1847,13 @@ class libGL(MTLibrary):
     )
 
 
+class libwebgpu(MTLibrary):
+  name = 'libwebgpu'
+
+  src_dir = 'system/lib/webgpu'
+  src_files = ['webgpu.cpp']
+
+
 class libwebgpu_cpp(MTLibrary):
   name = 'libwebgpu_cpp'
 
@@ -2318,7 +2325,9 @@ def get_libs_to_link(args, forced, only_forced):
     add_library('libsockets')
 
   if settings.USE_WEBGPU:
-    add_library('libwebgpu_cpp')
+    add_library('libwebgpu')
+    if settings.LINK_AS_CXX:
+      add_library('libwebgpu_cpp')
 
   if settings.WASM_WORKERS:
     add_library('libwasm_workers')
