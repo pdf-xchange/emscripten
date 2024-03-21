@@ -21,6 +21,20 @@
 // new function with an '_', it will not be found.
 
 addToLibrary({
+  // JS aliases for native stack manipulation functions
+  $stackSave__deps: ['emscripten_stack_get_current'],
+  $stackSave: () => _emscripten_stack_get_current(),
+  $stackRestore__deps: ['_emscripten_stack_restore'],
+  $stackRestore: (val) => __emscripten_stack_restore(val),
+  $stackAlloc__deps: ['_emscripten_stack_alloc'],
+  $stackAlloc: (sz) => __emscripten_stack_alloc(sz),
+
+  // Aliases that allow legacy names (without leading $) for these
+  // stack functions to continue to work in `__deps` entries.
+  stackAlloc: '$stackAlloc',
+  stackSave: '$stackSave',
+  stackRestore: '$stackSave',
+
   $ptrToString: (ptr) => {
 #if ASSERTIONS
     assert(typeof ptr === 'number');
@@ -76,7 +90,7 @@ addToLibrary({
 
 #if PTHREADS
     if (ENVIRONMENT_IS_PTHREAD) {
-      // implict exit can never happen on a pthread
+      // implicit exit can never happen on a pthread
 #if ASSERTIONS
       assert(!implicit);
 #endif
@@ -374,6 +388,7 @@ addToLibrary({
   // stdlib.h
   // ==========================================================================
 
+#if !STANDALONE_WASM
   // TODO: There are currently two abort() functions that get imported to asm
   // module scope: the built-in runtime function abort(), and this library
   // function _abort(). Remove one of these, importing two functions for the
@@ -385,6 +400,7 @@ addToLibrary({
     abort('');
 #endif
   },
+#endif
 
   // This object can be modified by the user during startup, which affects
   // the initial values of the environment accessible by getenv.
@@ -426,9 +442,11 @@ addToLibrary({
   // assert.h
   // ==========================================================================
 
+#if !STANDALONE_WASM
   __assert_fail: (condition, filename, line, func) => {
     abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : 'unknown filename', line, func ? UTF8ToString(func) : 'unknown function']);
   },
+#endif
 
   // ==========================================================================
   // time.h
@@ -592,7 +610,7 @@ addToLibrary({
 #endif
 
   $withStackSave__internal: true,
-  $withStackSave__deps: ['stackSave', 'stackRestore'],
+  $withStackSave__deps: ['$stackSave', '$stackRestore'],
   $withStackSave: (f) => {
     var stack = stackSave();
     var ret = f();
@@ -600,9 +618,9 @@ addToLibrary({
     return ret;
   },
 
-  _tzset_js__deps: ['$stringToNewUTF8'],
+  _tzset_js__deps: ['$stringToUTF8'],
   _tzset_js__internal: true,
-  _tzset_js: (timezone, daylight, tzname) => {
+  _tzset_js: (timezone, daylight, std_name, dst_name) => {
     // TODO: Use (malleable) environment variables instead of system settings.
     var currentYear = new Date().getFullYear();
     var winter = new Date(currentYear, 0, 1);
@@ -610,9 +628,12 @@ addToLibrary({
     var winterOffset = winter.getTimezoneOffset();
     var summerOffset = summer.getTimezoneOffset();
 
-    // Local standard timezone offset. Local standard time is not adjusted for daylight savings.
-    // This code uses the fact that getTimezoneOffset returns a greater value during Standard Time versus Daylight Saving Time (DST).
-    // Thus it determines the expected output during Standard Time, and it compares whether the output of the given date the same (Standard) or less (DST).
+    // Local standard timezone offset. Local standard time is not adjusted for
+    // daylight savings.  This code uses the fact that getTimezoneOffset returns
+    // a greater value during Standard Time versus Daylight Saving Time (DST).
+    // Thus it determines the expected output during Standard Time, and it
+    // compares whether the output of the given date the same (Standard) or less
+    // (DST).
     var stdTimezoneOffset = Math.max(winterOffset, summerOffset);
 
     // timezone is specified as seconds west of UTC ("The external variable
@@ -630,15 +651,13 @@ addToLibrary({
     };
     var winterName = extractZone(winter);
     var summerName = extractZone(summer);
-    var winterNamePtr = stringToNewUTF8(winterName);
-    var summerNamePtr = stringToNewUTF8(summerName);
     if (summerOffset < winterOffset) {
       // Northern hemisphere
-      {{{ makeSetValue('tzname', '0', 'winterNamePtr', POINTER_TYPE) }}};
-      {{{ makeSetValue('tzname', POINTER_SIZE, 'summerNamePtr', POINTER_TYPE) }}};
+      stringToUTF8(winterName, std_name, {{{ cDefs.TZNAME_MAX + 1 }}});
+      stringToUTF8(summerName, dst_name, {{{ cDefs.TZNAME_MAX + 1 }}});
     } else {
-      {{{ makeSetValue('tzname', '0', 'summerNamePtr', POINTER_TYPE) }}};
-      {{{ makeSetValue('tzname', POINTER_SIZE, 'winterNamePtr', POINTER_TYPE) }}};
+      stringToUTF8(winterName, dst_name, {{{ cDefs.TZNAME_MAX + 1 }}});
+      stringToUTF8(summerName, std_name, {{{ cDefs.TZNAME_MAX + 1 }}});
     }
   },
 
@@ -2365,110 +2384,6 @@ addToLibrary({
     }
   },
 
-  $getCallstack__deps: ['$jsStackTrace', '$warnOnce'],
-  $getCallstack__docs: '/** @param {number=} flags */',
-  $getCallstack: function(flags) {
-    var callstack = jsStackTrace();
-
-    // Find the symbols in the callstack that corresponds to the functions that
-    // report callstack information, and remove everything up to these from the
-    // output.
-    var iThisFunc = callstack.lastIndexOf('_emscripten_log');
-    var iThisFunc2 = callstack.lastIndexOf('_emscripten_get_callstack');
-    var iNextLine = callstack.indexOf('\n', Math.max(iThisFunc, iThisFunc2))+1;
-    callstack = callstack.slice(iNextLine);
-
-    // If user requested to see the original source stack, but no source map
-    // information is available, just fall back to showing the JS stack.
-    if (flags & {{{ cDefs.EM_LOG_C_STACK }}} && typeof emscripten_source_map == 'undefined') {
-      warnOnce('Source map information is not available, emscripten_log with EM_LOG_C_STACK will be ignored. Build with "--pre-js $EMSCRIPTEN/src/emscripten-source-map.min.js" linker flag to add source map loading to code.');
-      flags ^= {{{ cDefs.EM_LOG_C_STACK }}};
-      flags |= {{{ cDefs.EM_LOG_JS_STACK }}};
-    }
-
-    // Process all lines:
-    var lines = callstack.split('\n');
-    callstack = '';
-    // New FF30 with column info: extract components of form:
-    // '       Object._main@http://server.com:4324:12'
-    var newFirefoxRe = new RegExp('\\s*(.*?)@(.*?):([0-9]+):([0-9]+)');
-    // Old FF without column info: extract components of form:
-    // '       Object._main@http://server.com:4324'
-    var firefoxRe = new RegExp('\\s*(.*?)@(.*):(.*)(:(.*))?');
-    // Extract components of form:
-    // '    at Object._main (http://server.com/file.html:4324:12)'
-    var chromeRe = new RegExp('\\s*at (.*?) \\\((.*):(.*):(.*)\\\)');
-
-    for (var l in lines) {
-      var line = lines[l];
-
-      var symbolName = '';
-      var file = '';
-      var lineno = 0;
-      var column = 0;
-
-      var parts = chromeRe.exec(line);
-      if (parts && parts.length == 5) {
-        symbolName = parts[1];
-        file = parts[2];
-        lineno = parts[3];
-        column = parts[4];
-      } else {
-        parts = newFirefoxRe.exec(line);
-        if (!parts) parts = firefoxRe.exec(line);
-        if (parts && parts.length >= 4) {
-          symbolName = parts[1];
-          file = parts[2];
-          lineno = parts[3];
-          // Old Firefox doesn't carry column information, but in new FF30, it
-          // is present. See https://bugzilla.mozilla.org/show_bug.cgi?id=762556
-          column = parts[4]|0;
-        } else {
-          // Was not able to extract this line for demangling/sourcemapping
-          // purposes. Output it as-is.
-          callstack += line + '\n';
-          continue;
-        }
-      }
-
-      var haveSourceMap = false;
-
-      if (flags & {{{ cDefs.EM_LOG_C_STACK }}}) {
-        var orig = emscripten_source_map.originalPositionFor({line: lineno, column: column});
-        haveSourceMap = orig?.source;
-        if (haveSourceMap) {
-          if (flags & {{{ cDefs.EM_LOG_NO_PATHS }}}) {
-            orig.source = orig.source.substring(orig.source.replace(/\\/g, "/").lastIndexOf('/')+1);
-          }
-          callstack += `    at ${symbolName} (${orig.source}:${orig.line}:${orig.column})\n`;
-        }
-      }
-      if ((flags & {{{ cDefs.EM_LOG_JS_STACK }}}) || !haveSourceMap) {
-        if (flags & {{{ cDefs.EM_LOG_NO_PATHS }}}) {
-          file = file.substring(file.replace(/\\/g, "/").lastIndexOf('/')+1);
-        }
-        callstack += (haveSourceMap ? (`     = ${symbolName}`) : (`    at ${symbolName}`)) + ` (${file}:${lineno}:${column})\n`;
-      }
-    }
-    // Trim extra whitespace at the end of the output.
-    callstack = callstack.replace(/\s+$/, '');
-    return callstack;
-  },
-
-  emscripten_get_callstack__deps: ['$getCallstack', '$lengthBytesUTF8', '$stringToUTF8'],
-  emscripten_get_callstack: function(flags, str, maxbytes) {
-    var callstack = getCallstack(flags);
-    // User can query the required amount of bytes to hold the callstack.
-    if (!str || maxbytes <= 0) {
-      return lengthBytesUTF8(callstack)+1;
-    }
-    // Output callstack string as C string to HEAP.
-    var bytesWrittenExcludingNull = stringToUTF8(callstack, str, maxbytes);
-
-    // Return number of bytes written, including null.
-    return bytesWrittenExcludingNull+1;
-  },
-
   $emscriptenLog__deps: ['$getCallstack'],
   $emscriptenLog: (flags, str) => {
     if (flags & {{{ cDefs.EM_LOG_C_STACK | cDefs.EM_LOG_JS_STACK }}}) {
@@ -2534,241 +2449,6 @@ addToLibrary({
     var str = x + '';
     if (to) return stringToUTF8(str, to, max);
     else return lengthBytesUTF8(str);
-  },
-
-  // Generates a representation of the program counter from a line of stack trace.
-  // The exact return value depends in whether we are running WASM or JS, and whether
-  // the engine supports offsets into WASM. See the function body for details.
-  $convertFrameToPC__docs: '/** @returns {number} */',
-  $convertFrameToPC__internal: true,
-  $convertFrameToPC: (frame) => {
-#if !USE_OFFSET_CONVERTER
-    abort('Cannot use convertFrameToPC (needed by __builtin_return_address) without -sUSE_OFFSET_CONVERTER');
-#else
-#if ASSERTIONS
-    assert(wasmOffsetConverter);
-#endif
-    var match;
-
-    if (match = /\bwasm-function\[\d+\]:(0x[0-9a-f]+)/.exec(frame)) {
-      // some engines give the binary offset directly, so we use that as return address
-      return +match[1];
-    } else if (match = /\bwasm-function\[(\d+)\]:(\d+)/.exec(frame)) {
-      // other engines only give function index and offset in the function,
-      // so we try using the offset converter. If that doesn't work,
-      // we pack index and offset into a "return address"
-      return wasmOffsetConverter.convert(+match[1], +match[2]);
-    } else if (match = /:(\d+):\d+(?:\)|$)/.exec(frame)) {
-      // If we are in js, we can use the js line number as the "return address".
-      // This should work for wasm2js.  We tag the high bit to distinguish this
-      // from wasm addresses.
-      return 0x80000000 | +match[1];
-    }
-#endif
-    // return 0 if we can't find any
-    return 0;
-  },
-
-  // Returns a representation of a call site of the caller of this function, in a manner
-  // similar to __builtin_return_address. If level is 0, we return the call site of the
-  // caller of this function.
-  emscripten_return_address__deps: ['$convertFrameToPC', '$jsStackTrace'],
-  emscripten_return_address: (level) => {
-    var callstack = jsStackTrace().split('\n');
-    if (callstack[0] == 'Error') {
-      callstack.shift();
-    }
-    // skip this function and the caller to get caller's return address
-#if MEMORY64
-    // MEMORY64 injects and extra wrapper within emscripten_return_address
-    // to handle BigInt convertions.
-    var caller = callstack[level + 4];
-#else
-    var caller = callstack[level + 3];
-#endif
-    return convertFrameToPC(caller);
-  },
-
-  $UNWIND_CACHE: {},
-
-  // This function pulls the JavaScript stack trace and updates UNWIND_CACHE so
-  // that our representation of the program counter is mapped to the line of the
-  // stack trace for every line in the stack trace. This allows
-  // emscripten_pc_get_* to lookup the line of the stack trace from the PC and
-  // return meaningful information.
-  //
-  // Additionally, it saves a copy of the entire stack trace and the return
-  // address of the caller. This is because there are two common forms of a
-  // stack trace.  The first form starts the stack trace at the caller of the
-  // function requesting a stack trace. In this case, the function can simply
-  // walk down the stack from the return address using emscripten_return_address
-  // with increasing values for level.  The second form starts the stack trace
-  // at the current function. This requires a helper function to get the program
-  // counter. This helper function will return the return address.  This is the
-  // program counter at the call site. But there is a problem: when calling into
-  // code that performs stack unwinding, the program counter has changed since
-  // execution continued from calling the helper function. So we can't just walk
-  // down the stack and expect to see the PC value we got. By caching the call
-  // stack, we can call emscripten_stack_unwind with the PC value and use that
-  // to unwind the cached stack. Naturally, the PC helper function will have to
-  // call emscripten_stack_snapshot to cache the stack. We also return the
-  // return address of the caller so the PC helper function does not need to
-  // call emscripten_return_address, saving a lot of time.
-  //
-  // One might expect that a sensible solution is to call the stack unwinder and
-  // explicitly tell it how many functions to skip from the stack. However,
-  // existing libraries do not work this way.  For example, compiler-rt's
-  // sanitizer_common library has macros GET_CALLER_PC_BP_SP and
-  // GET_CURRENT_PC_BP_SP, which obtains the PC value for the two common cases
-  // stated above, respectively. Then, it passes the PC, BP, SP values along
-  // until some other function uses them to unwind. On standard machines, the
-  // stack can be unwound by treating BP as a linked list.  This makes PC
-  // unnecessary to walk the stack, since walking is done with BP, which remains
-  // valid until the function returns. But on Emscripten, BP does not exist, at
-  // least in JavaScript frames, so we have to rely on PC values. Therefore, we
-  // must be able to unwind from a PC value that may no longer be on the
-  // execution stack, and so we are forced to cache the entire call stack.
-  emscripten_stack_snapshot__deps: ['$convertFrameToPC', '$UNWIND_CACHE', '$saveInUnwindCache', '$jsStackTrace'],
-  emscripten_stack_snapshot: function() {
-    var callstack = jsStackTrace().split('\n');
-    if (callstack[0] == 'Error') {
-      callstack.shift();
-    }
-    saveInUnwindCache(callstack);
-
-    // Caches the stack snapshot so that emscripten_stack_unwind_buffer() can
-    // unwind from this spot.
-    UNWIND_CACHE.last_addr = convertFrameToPC(callstack[3]);
-    UNWIND_CACHE.last_stack = callstack;
-    return UNWIND_CACHE.last_addr;
-  },
-
-  $saveInUnwindCache__deps: ['$UNWIND_CACHE', '$convertFrameToPC'],
-  $saveInUnwindCache__internal: true,
-  $saveInUnwindCache: (callstack) => {
-    callstack.forEach((frame) => {
-      var pc = convertFrameToPC(frame);
-      if (pc) {
-        UNWIND_CACHE[pc] = frame;
-      }
-    });
-  },
-
-  // Unwinds the stack from a cached PC value. See emscripten_stack_snapshot for
-  // how this is used.  addr must be the return address of the last call to
-  // emscripten_stack_snapshot, or this function will instead use the current
-  // call stack.
-  emscripten_stack_unwind_buffer__deps: ['$UNWIND_CACHE', '$saveInUnwindCache', '$convertFrameToPC', '$jsStackTrace'],
-  emscripten_stack_unwind_buffer: (addr, buffer, count) => {
-    var stack;
-    if (UNWIND_CACHE.last_addr == addr) {
-      stack = UNWIND_CACHE.last_stack;
-    } else {
-      stack = jsStackTrace().split('\n');
-      if (stack[0] == 'Error') {
-        stack.shift();
-      }
-      saveInUnwindCache(stack);
-    }
-
-    var offset = 3;
-    while (stack[offset] && convertFrameToPC(stack[offset]) != addr) {
-      ++offset;
-    }
-
-    for (var i = 0; i < count && stack[i+offset]; ++i) {
-      {{{ makeSetValue('buffer', 'i*4', 'convertFrameToPC(stack[i + offset])', 'i32') }}};
-    }
-    return i;
-  },
-
-  // Look up the function name from our stack frame cache with our PC representation.
-#if USE_OFFSET_CONVERTER
-  emscripten_pc_get_function__deps: ['$UNWIND_CACHE', 'free', '$stringToNewUTF8'],
-  // Don't treat allocation of _emscripten_pc_get_function.ret as a leak
-  emscripten_pc_get_function__noleakcheck: true,
-#endif
-  emscripten_pc_get_function: (pc) => {
-#if !USE_OFFSET_CONVERTER
-    abort('Cannot use emscripten_pc_get_function without -sUSE_OFFSET_CONVERTER');
-    return 0;
-#else
-    var name;
-    if (pc & 0x80000000) {
-      // If this is a JavaScript function, try looking it up in the unwind cache.
-      var frame = UNWIND_CACHE[pc];
-      if (!frame) return 0;
-
-      var match;
-      if (match = /^\s+at (.*) \(.*\)$/.exec(frame)) {
-        name = match[1];
-      } else if (match = /^(.+?)@/.exec(frame)) {
-        name = match[1];
-      } else {
-        return 0;
-      }
-    } else {
-      name = wasmOffsetConverter.getName(pc);
-    }
-    if (_emscripten_pc_get_function.ret) _free(_emscripten_pc_get_function.ret);
-    _emscripten_pc_get_function.ret = stringToNewUTF8(name);
-    return _emscripten_pc_get_function.ret;
-#endif
-  },
-
-  $convertPCtoSourceLocation__deps: ['$UNWIND_CACHE', '$convertFrameToPC'],
-  $convertPCtoSourceLocation: (pc) => {
-    if (UNWIND_CACHE.last_get_source_pc == pc) return UNWIND_CACHE.last_source;
-
-    var match;
-    var source;
-#if LOAD_SOURCE_MAP
-    if (wasmSourceMap) {
-      source = wasmSourceMap.lookup(pc);
-    }
-#endif
-
-    if (!source) {
-      var frame = UNWIND_CACHE[pc];
-      if (!frame) return null;
-      // Example: at callMain (a.out.js:6335:22)
-      if (match = /\((.*):(\d+):(\d+)\)$/.exec(frame)) {
-        source = {file: match[1], line: match[2], column: match[3]};
-      // Example: main@a.out.js:1337:42
-      } else if (match = /@(.*):(\d+):(\d+)/.exec(frame)) {
-        source = {file: match[1], line: match[2], column: match[3]};
-      }
-    }
-    UNWIND_CACHE.last_get_source_pc = pc;
-    UNWIND_CACHE.last_source = source;
-    return source;
-  },
-
-  // Look up the file name from our stack frame cache with our PC representation.
-  emscripten_pc_get_file__deps: ['$convertPCtoSourceLocation', 'free', '$stringToNewUTF8'],
-  // Don't treat allocation of _emscripten_pc_get_file.ret as a leak
-  emscripten_pc_get_file__noleakcheck: true,
-  emscripten_pc_get_file: (pc) => {
-    var result = convertPCtoSourceLocation(pc);
-    if (!result) return 0;
-
-    if (_emscripten_pc_get_file.ret) _free(_emscripten_pc_get_file.ret);
-    _emscripten_pc_get_file.ret = stringToNewUTF8(result.file);
-    return _emscripten_pc_get_file.ret;
-  },
-
-  // Look up the line number from our stack frame cache with our PC representation.
-  emscripten_pc_get_line__deps: ['$convertPCtoSourceLocation'],
-  emscripten_pc_get_line: (pc) => {
-    var result = convertPCtoSourceLocation(pc);
-    return result ? result.line : 0;
-  },
-
-  // Look up the column number from our stack frame cache with our PC representation.
-  emscripten_pc_get_column__deps: ['$convertPCtoSourceLocation'],
-  emscripten_pc_get_column: (pc) => {
-    var result = convertPCtoSourceLocation(pc);
-    return result ? result.column || 0 : 0;
   },
 
   emscripten_get_module_name__deps: ['$stringToUTF8'],
@@ -2874,7 +2554,7 @@ addToLibrary({
 #if ASSERTIONS
     assert(ASM_CONSTS.hasOwnProperty(code), `No EM_ASM constant found at address ${code}.  The loaded WebAssembly file is likely out of sync with the generated JavaScript.`);
 #endif
-    return ASM_CONSTS[code].apply(null, args);
+    return ASM_CONSTS[code](...args);
   },
 
   emscripten_asm_const_int__deps: ['$runEmAsmFunction'],
@@ -2896,7 +2576,7 @@ addToLibrary({
     '$proxyToMainThread'
 #endif
   ],
-  $runMainThreadEmAsm: (code, sigPtr, argbuf, sync) => {
+  $runMainThreadEmAsm: (emAsmAddr, sigPtr, argbuf, sync) => {
     var args = readEmAsmArgs(sigPtr, argbuf);
 #if PTHREADS
     if (ENVIRONMENT_IS_PTHREAD) {
@@ -2909,29 +2589,23 @@ addToLibrary({
       // of using __proxy. (And dor simplicity, do the same in the sync
       // case as well, even though it's not strictly necessary, to keep the two
       // code paths as similar as possible on both sides.)
-      // -1 - code is the encoding of a proxied EM_ASM, as a negative number
-      // (positive numbers are non-EM_ASM calls).
-      return proxyToMainThread.apply(null, [-1 - code, sync].concat(args));
+      return proxyToMainThread(0, emAsmAddr, sync, ...args);
     }
 #endif
 #if ASSERTIONS
-    assert(ASM_CONSTS.hasOwnProperty(code), `No EM_ASM constant found at address ${code}.  The loaded WebAssembly file is likely out of sync with the generated JavaScript.`);
+    assert(ASM_CONSTS.hasOwnProperty(emAsmAddr), `No EM_ASM constant found at address ${emAsmAddr}.  The loaded WebAssembly file is likely out of sync with the generated JavaScript.`);
 #endif
-    return ASM_CONSTS[code].apply(null, args);
+    return ASM_CONSTS[emAsmAddr](...args);
   },
   emscripten_asm_const_int_sync_on_main_thread__deps: ['$runMainThreadEmAsm'],
-  emscripten_asm_const_int_sync_on_main_thread: (code, sigPtr, argbuf) => {
-    return runMainThreadEmAsm(code, sigPtr, argbuf, 1);
-  },
+  emscripten_asm_const_int_sync_on_main_thread: (emAsmAddr, sigPtr, argbuf) => runMainThreadEmAsm(emAsmAddr, sigPtr, argbuf, 1),
 
   emscripten_asm_const_ptr_sync_on_main_thread__deps: ['$runMainThreadEmAsm'],
-  emscripten_asm_const_ptr_sync_on_main_thread: (code, sigPtr, argbuf) => {
-    return runMainThreadEmAsm(code, sigPtr, argbuf, 1);
-  },
+  emscripten_asm_const_ptr_sync_on_main_thread: (emAsmAddr, sigPtr, argbuf) => runMainThreadEmAsm(emAsmAddr, sigPtr, argbuf, 1),
 
   emscripten_asm_const_double_sync_on_main_thread: 'emscripten_asm_const_int_sync_on_main_thread',
   emscripten_asm_const_async_on_main_thread__deps: ['$runMainThreadEmAsm'],
-  emscripten_asm_const_async_on_main_thread: (code, sigPtr, argbuf) => runMainThreadEmAsm(code, sigPtr, argbuf, 0),
+  emscripten_asm_const_async_on_main_thread: (emAsmAddr, sigPtr, argbuf) => runMainThreadEmAsm(emAsmAddr, sigPtr, argbuf, 0),
 #endif
 
 #if !DECLARE_ASM_MODULE_EXPORTS
@@ -3100,7 +2774,7 @@ addToLibrary({
 #endif
     var f = Module['dynCall_' + sig];
 #endif
-    return args && args.length ? f.apply(null, [ptr].concat(args)) : f.call(null, ptr);
+    return f(ptr, ...args);
   },
   $dynCall__deps: ['$dynCallLegacy', '$getWasmTableEntry'],
 #endif
@@ -3113,16 +2787,10 @@ addToLibrary({
 #if ASSERTIONS && !DYNCALLS
     assert(sig.includes('j') || sig.includes('p'), 'getDynCaller should only be called with i64 sigs')
 #endif
-    var argCache = [];
-    return function() {
-      argCache.length = 0;
-      Object.assign(argCache, arguments);
-      return dynCall(sig, ptr, argCache);
-    };
+    return (...args) => dynCall(sig, ptr, args);
   },
 
-  $dynCall__docs: '/** @param {Object=} args */',
-  $dynCall: (sig, ptr, args) => {
+  $dynCall: (sig, ptr, args = []) => {
 #if MEMORY64
     // With MEMORY64 we have an additional step to convert `p` arguments to
     // bigint. This is the runtime equivalent of the wrappers we create for wasm
@@ -3136,7 +2804,7 @@ addToLibrary({
 #else
 #if !WASM_BIGINT
     // Without WASM_BIGINT support we cannot directly call function with i64 as
-    // part of thier signature, so we rely the dynCall functions generated by
+    // part of their signature, so we rely on the dynCall functions generated by
     // wasm-emscripten-finalize
     if (sig.includes('j')) {
       return dynCallLegacy(sig, ptr, args);
@@ -3145,7 +2813,7 @@ addToLibrary({
 #if ASSERTIONS
     assert(getWasmTableEntry(ptr), `missing table entry in dynCall: ${ptr}`);
 #endif
-    var rtn = getWasmTableEntry(ptr).apply(null, args);
+    var rtn = getWasmTableEntry(ptr)(...args);
 #endif
 #if MEMORY64
     return sig[0] == 'p' ? Number(rtn) : rtn;
@@ -3173,7 +2841,7 @@ addToLibrary({
   $setWasmTableEntry__deps: ['$wasmTableMirror', '$wasmTable'],
   $setWasmTableEntry: (idx, func) => {
     wasmTable.set(idx, func);
-    // With ABORT_ON_WASM_EXCEPTIONS wasmTable.get is overriden to return wrapped
+    // With ABORT_ON_WASM_EXCEPTIONS wasmTable.get is overridden to return wrapped
     // functions so we need to call it here to retrieve the potential wrapper correctly
     // instead of just storing 'func' directly into wasmTableMirror
     wasmTableMirror[idx] = wasmTable.get(idx);
@@ -3339,11 +3007,7 @@ addToLibrary({
       }
     }
 #endif
-#if MINIMAL_RUNTIME
-    throw e;
-#else
     quit_(1, e);
-#endif
   },
 
   $runtimeKeepaliveCounter__internal: true,
@@ -3386,7 +3050,7 @@ addToLibrary({
   // setTimeout or any other kind of event handler that calls into user case
   // needs to use this wrapper.
   //
-  // The job of this wrapper is the handle emscripten-specfic exceptions such
+  // The job of this wrapper is the handle emscripten-specific exceptions such
   // as ExitStatus and 'unwind' and prevent these from escaping to the top
   // level.
   $callUserCallback__deps: ['$handleException', '$maybeExit'],
@@ -3562,9 +3226,8 @@ addToLibrary({
 
   $HandleAllocator: class {
     constructor() {
-      // TODO(sbc): Use class fields once we allow/enable es2022 in
-      // JavaScript input to acorn and closure.
-      // Reserve slot 0 so that 0 is always an invalid handle
+      // TODO(https://github.com/emscripten-core/emscripten/issues/21414):
+      // Use inline field declarations.
       this.allocated = [undefined];
       this.freelist = [];
     }
@@ -3573,15 +3236,15 @@ addToLibrary({
       assert(this.allocated[id] !== undefined, `invalid handle: ${id}`);
 #endif
       return this.allocated[id];
-    };
+    }
     has(id) {
       return this.allocated[id] !== undefined;
-    };
+    }
     allocate(handle) {
       var id = this.freelist.pop() || this.allocated.length;
       this.allocated[id] = handle;
       return id;
-    };
+    }
     free(id) {
 #if ASSERTIONS
       assert(this.allocated[id] !== undefined);
@@ -3590,7 +3253,7 @@ addToLibrary({
       // apparently arrays with holes in them can be less efficient.
       this.allocated[id] = undefined;
       this.freelist.push(id);
-    };
+    }
   },
 
   $getNativeTypeSize__deps: ['$POINTER_SIZE'],

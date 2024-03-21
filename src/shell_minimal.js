@@ -33,15 +33,15 @@ var Module =
 var Module = {{{ EXPORT_NAME }}};
 #endif
 
-#if MODULARIZE && EXPORT_READY_PROMISE
+#if MODULARIZE && USE_READY_PROMISE
 // Set up the promise that indicates the Module is initialized
 var readyPromiseResolve, readyPromiseReject;
-Module['ready'] = new Promise((resolve, reject) => {
+var readyPromise = new Promise((resolve, reject) => {
   readyPromiseResolve = resolve;
   readyPromiseReject = reject;
 });
 #if ASSERTIONS
-{{{ addReadyPromiseAssertions("Module['ready']") }}}
+{{{ addReadyPromiseAssertions() }}}
 #endif
 #endif
 
@@ -82,7 +82,7 @@ if (ENVIRONMENT_IS_NODE && ENVIRONMENT_IS_SHELL) {
 #endif
 
 #if !SINGLE_FILE
-#if ENVIRONMENT_MAY_BE_NODE && ((WASM == 1 && (!WASM2JS || !MEM_INIT_IN_WASM)) || WASM == 2)
+#if ENVIRONMENT_MAY_BE_NODE && ((WASM == 1 && !WASM2JS) || WASM == 2)
 // Wasm or Wasm2JS loading:
 
 if (ENVIRONMENT_IS_NODE) {
@@ -95,13 +95,10 @@ if (ENVIRONMENT_IS_NODE) {
   Module['wasm'] = fs.readFileSync(__dirname + '/{{{ TARGET_BASENAME }}}.wasm');
 #endif
 #endif
-#if !MEM_INIT_IN_WASM
-  Module['mem'] = fs.readFileSync(__dirname + '/{{{ TARGET_BASENAME }}}.mem');
-#endif
 }
 #endif
 
-#if ENVIRONMENT_MAY_BE_SHELL && ((WASM == 1 && (!WASM2JS || !MEM_INIT_IN_WASM)) || WASM == 2)
+#if ENVIRONMENT_MAY_BE_SHELL && ((WASM == 1 && !WASM2JS) || WASM == 2)
 if (ENVIRONMENT_IS_SHELL) {
 #if WASM == 2
   if (typeof WebAssembly != 'undefined') Module['wasm'] = read('{{{ TARGET_BASENAME }}}.wasm', 'binary');
@@ -110,9 +107,6 @@ if (ENVIRONMENT_IS_SHELL) {
 #if !WASM2JS
   Module['wasm'] = read('{{{ TARGET_BASENAME }}}.wasm', 'binary');
 #endif
-#endif
-#if !MEM_INIT_IN_WASM
-  Module['mem'] = read('{{{ TARGET_BASENAME }}}.mem', 'binary');
 #endif
 }
 #endif
@@ -131,7 +125,7 @@ var err = (text) => console.error(text);
 // compilation is ready. In that callback, call the function run() to start
 // the program.
 function ready() {
-#if MODULARIZE && EXPORT_READY_PROMISE
+#if MODULARIZE && USE_READY_PROMISE
   readyPromiseResolve(Module);
 #endif // MODULARIZE
 #if INVOKE_RUN && HAS_MAIN

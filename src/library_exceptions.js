@@ -287,7 +287,7 @@ var LibraryExceptions = {
 
 #endif
 #if WASM_EXCEPTIONS || !DISABLE_EXCEPTION_CATCHING
-  $getExceptionMessageCommon__deps: ['__get_exception_message', 'free', '$withStackSave', 'stackAlloc'],
+  $getExceptionMessageCommon__deps: ['__get_exception_message', 'free', '$withStackSave', '$stackAlloc'],
   $getExceptionMessageCommon: (ptr) => withStackSave(() => {
     var type_addr_addr = stackAlloc({{{ POINTER_SIZE }}});
     var message_addr_addr = stackAlloc({{{ POINTER_SIZE }}});
@@ -397,7 +397,7 @@ addCxaCatch = (n) => {
   LibraryManager.library[`__cxa_find_matching_catch_${n}`] = eval(`(${args}) => findMatchingCatch([${argString}])`);
 };
 
-// Add the first 2-5 catch handlers premptively.  Others get added on demand in
+// Add the first 2-5 catch handlers preemptively.  Others get added on demand in
 // jsifier.  This is done here primarily so that these symbols end up with the
 // correct deps in the stub library that we pass to wasm-ld.
 // Note: __cxa_find_matching_catch_N function uses N = NumClauses + 2 so
