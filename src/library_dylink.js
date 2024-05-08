@@ -92,6 +92,12 @@ var LibraryDylink = {
         if (e !== e+0) throw e;
 #endif
         _setThrew(1, 0);
+#if WASM_BIGINT        
+        // In theory this if statement could be done on
+        // creating the function, but I just added this to
+        // save wasting code space as it only happens on exception.
+        if (sig[0] == "j") return 0n;
+#endif        
       }
     }
   },
@@ -340,15 +346,15 @@ var LibraryDylink = {
   },
 
   $dlSetError__internal: true,
-  $dlSetError__deps: ['__dl_seterr', '$stringToUTF8OnStack', '$withStackSave'],
+  $dlSetError__deps: ['__dl_seterr', '$stringToUTF8OnStack', '$stackSave', '$stackRestore'],
   $dlSetError: (msg) => {
 #if DYLINK_DEBUG
     dbg(`dlSetError: ${msg}`);
 #endif
-    withStackSave(() => {
-      var cmsg = stringToUTF8OnStack(msg);
-      ___dl_seterr(cmsg, 0);
-    });
+    var sp = stackSave();
+    var cmsg = stringToUTF8OnStack(msg);
+    ___dl_seterr(cmsg, 0);
+    stackRestore(sp);
   },
 
   // We support some amount of allocation during startup in the case of

@@ -1030,16 +1030,11 @@ ASYNCIFY
 Whether to support async operations in the compiled code. This makes it
 possible to call JS functions from synchronous-looking code in C/C++.
 
-- Run binaryen's Asyncify pass to transform the code using asyncify. This
-  emits a normal wasm file in the end, so it works everywhere, but it has a
-  significant cost in terms of code size and speed.
+- 1 (default): Run binaryen's Asyncify pass to transform the code using
+  asyncify. This emits a normal wasm file in the end, so it works everywhere,
+  but it has a significant cost in terms of code size and speed.
   See https://emscripten.org/docs/porting/asyncify.html
-- Depend on VM support for the wasm stack switching proposal. This allows
-  async operations to happen without the overhead of modifying the wasm.
-  This is experimental atm while spec discussion is ongoing, see
-  https://github.com/WebAssembly/js-promise-integration/
-  TODO: document which of the following flags are still relevant in this
-  mode (e.g. IGNORE_INDIRECT etc. are not needed)
+- 2 (deprecated): Use ``-sJSPI`` instead.
 
 .. _asyncify_imports:
 
@@ -1131,6 +1126,15 @@ instrumented.
 See notes on ASYNCIFY_REMOVE about the names, including wildcard matching and
 character substitutions.
 
+.. _asyncify_propagate_add:
+
+ASYNCIFY_PROPAGATE_ADD
+======================
+
+If enabled, instrumentation status will be propagated from the add-list, ie.
+their callers, and their callers' callers, and so on. If disabled then all
+callers must be manually added to the add-list (like the only-list).
+
 .. _asyncify_only:
 
 ASYNCIFY_ONLY
@@ -1176,6 +1180,18 @@ ASYNCIFY_EXPORTS
 Specify which of the exports will have JSPI applied to them and return a
 promise.
 Only supported for ASYNCIFY==2 mode.
+
+.. _jspi:
+
+JSPI
+====
+
+Use VM support for the JavaScript Promise Integration proposal. This allows
+async operations to happen without the overhead of modifying the wasm. This
+is experimental atm while spec discussion is ongoing, see
+https://github.com/WebAssembly/js-promise-integration/ TODO: document which
+of the following flags are still relevant in this mode (e.g. IGNORE_INDIRECT
+etc. are not needed)
 
 .. _exported_runtime_methods:
 
@@ -1860,6 +1876,8 @@ Whether to legalize the JS FFI interfaces (imports/exports) by wrapping them
 to automatically demote i64 to i32 and promote f32 to f64. This is necessary
 in order to interface with JavaScript.  For non-web/non-JS embeddings, setting
 this to 0 may be desirable.
+
+.. note:: This setting is deprecated
 
 .. _use_sdl:
 

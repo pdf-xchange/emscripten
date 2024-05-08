@@ -927,11 +927,36 @@ class libcompiler_rt(MTLibrary, SjLjLibrary):
   # restriction soon: https://reviews.llvm.org/D71738
   force_object_files = True
 
-  cflags = ['-fno-builtin']
+  cflags = ['-fno-builtin', '-DNDEBUG']
   src_dir = 'system/lib/compiler-rt/lib/builtins'
   includes = ['system/lib/libc']
-  # gcc_personality_v0.c depends on libunwind, which don't include by default.
-  src_files = glob_in_path(src_dir, '*.c', excludes=['gcc_personality_v0.c', 'truncdfbf2.c', 'truncsfbf2.c', 'crtbegin.c', 'crtend.c'])
+  excludes = [
+    # gcc_personality_v0.c depends on libunwind, which don't include by default.
+    'gcc_personality_v0.c',
+    # bfloat16
+    'extendbfsf2.c',
+    'truncdfbf2.c',
+    'truncsfbf2.c',
+    # We provide our own crt
+    'crtbegin.c',
+    'crtend.c',
+    # 80-bit long double (xf_float)
+    'divxc3.c',
+    'extendxftf2.c',
+    'fixxfdi.c',
+    'fixxfti.c',
+    'fixunsxfdi.c',
+    'fixunsxfsi.c',
+    'fixunsxfti.c',
+    'floatdixf.c',
+    'floattixf.c',
+    'floatundixf.c',
+    'floatuntixf.c',
+    'mulxc3.c',
+    'powixf2.c',
+    'trunctfxf2.c',
+  ]
+  src_files = glob_in_path(src_dir, '*.c', excludes=excludes)
   src_files += files_in_path(
       path='system/lib/compiler-rt',
       filenames=[
@@ -1071,6 +1096,7 @@ class libc(MuslInternalLibrary,
         'memcpy.c', 'memset.c', 'memmove.c', 'getaddrinfo.c', 'getnameinfo.c',
         'res_query.c', 'res_querydomain.c',
         'proto.c',
+        'ppoll.c',
         'syscall.c', 'popen.c', 'pclose.c',
         'getgrouplist.c', 'initgroups.c', 'wordexp.c', 'timer_create.c',
         'getentropy.c',
@@ -1211,7 +1237,7 @@ class libc(MuslInternalLibrary,
 
     libc_files += files_in_path(
         path='system/lib/libc/musl/src/linux',
-        filenames=['getdents.c', 'gettid.c', 'utimes.c'])
+        filenames=['getdents.c', 'gettid.c', 'utimes.c', 'statx.c'])
 
     libc_files += files_in_path(
         path='system/lib/libc/musl/src/sched',
@@ -1219,7 +1245,7 @@ class libc(MuslInternalLibrary,
 
     libc_files += files_in_path(
         path='system/lib/libc/musl/src/exit',
-        filenames=['_Exit.c', 'atexit.c', 'at_quick_exit.c', 'quick_exit.c'])
+        filenames=['abort.c', '_Exit.c', 'atexit.c', 'at_quick_exit.c', 'quick_exit.c'])
 
     libc_files += files_in_path(
         path='system/lib/libc/musl/src/ldso',
@@ -1621,7 +1647,17 @@ class libcxx(NoExceptLibrary, MTLibrary):
     'support.cpp',
     'int128_builtins.cpp',
     'libdispatch.cpp',
+    # Emscripten does not have C++20's time zone support which requires access
+    # to IANA Time Zone Database. TODO Implement this using JS timezone
+    'tz.cpp',
+    'tzdb_list.cpp',
   ]
+
+  def get_cflags(self):
+    cflags = super().get_cflags()
+    if self.eh_mode == Exceptions.WASM:
+      cflags.append('-D__USING_WASM_EXCEPTIONS__')
+    return cflags
 
 
 class libunwind(NoExceptLibrary, MTLibrary):
@@ -2031,7 +2067,14 @@ class libsanitizer_common_rt(CompilerRTLibrary, MTLibrary):
               'system/lib/compiler-rt/lib',
               'system/lib/libc']
   never_force = True
-  cflags = ['-D_LARGEFILE64_SOURCE']
+  cflags = [
+    '-D_LARGEFILE64_SOURCE',
+    # The upstream code has many format violations and suppresses it with
+    # -Wno-format, so we match that.
+    # https://github.com/llvm/llvm-project/blob/da675b922cca3dc9a76642d792e882979a3d8c82/compiler-rt/lib/sanitizer_common/CMakeLists.txt#L225-L226
+    # TODO Remove this when the issues are resolved.
+    '-Wno-format',
+  ]
 
   src_dir = 'system/lib/compiler-rt/lib/sanitizer_common'
   src_glob = '*.cpp'
@@ -2194,7 +2237,7 @@ class libstubs(DebugLibrary):
   src_files = ['emscripten_syscall_stubs.c', 'emscripten_libc_stubs.c']
 
 
-def get_libs_to_link(args, forced, only_forced):
+def get_libs_to_link(args):
   libs_to_link = []
 
   if '-nostdlib' in args:
@@ -2210,11 +2253,19 @@ def get_libs_to_link(args, forced, only_forced):
   # ones you want
   force_include = []
   force = os.environ.get('EMCC_FORCE_STDLIBS')
+  # Setting this will only use the forced libs in EMCC_FORCE_STDLIBS. This
+  # avoids spending time checking for unresolved symbols in your project files,
+  # which can speed up linking, but if you do not have the proper list of
+  # actually needed libraries, errors can occur.
+  only_forced = os.environ.get('EMCC_ONLY_FORCED_STDLIBS')
+  if only_forced:
+    # One of the purposes EMCC_ONLY_FORCED_STDLIBS was to skip the scanning
+    # of the input files for reverse dependencies.
+    diagnostics.warning('deprecated', 'EMCC_ONLY_FORCED_STDLIBS is deprecated.  Use `-nostdlib` to avoid linking standard libraries')
   if force == '1':
     force_include = [name for name, lib in system_libs_map.items() if not lib.never_force]
   elif force is not None:
     force_include = force.split(',')
-  force_include += forced
   if force_include:
     logger.debug(f'forcing stdlibs: {force_include}')
 
@@ -2346,17 +2397,9 @@ def get_libs_to_link(args, forced, only_forced):
   return libs_to_link
 
 
-def calculate(args, forced):
-  # Setting this will only use the forced libs in EMCC_FORCE_STDLIBS. This avoids spending time checking
-  # for unresolved symbols in your project files, which can speed up linking, but if you do not have
-  # the proper list of actually needed libraries, errors can occur.
-  only_forced = os.environ.get('EMCC_ONLY_FORCED_STDLIBS')
-  if only_forced:
-    # One of the purposes EMCC_ONLY_FORCED_STDLIBS was to skip the scanning
-    # of the input files for reverse dependencies.
-    diagnostics.warning('deprecated', 'EMCC_ONLY_FORCED_STDLIBS is deprecated.  Use `-nostdlib` to avoid linking standard libraries')
+def calculate(args):
 
-  libs_to_link = get_libs_to_link(args, forced, only_forced)
+  libs_to_link = get_libs_to_link(args)
 
   # When LINKABLE is set the entire link command line is wrapped in --whole-archive by
   # building.link_ldd.  And since --whole-archive/--no-whole-archive processing does not nest we
@@ -2408,6 +2451,7 @@ def install_system_headers(stamp):
     ('lib', 'libc', 'musl', 'include'): '',
     ('lib', 'libcxx', 'include'): os.path.join('c++', 'v1'),
     ('lib', 'libcxxabi', 'include'): os.path.join('c++', 'v1'),
+    ('lib', 'mimalloc', 'include'): '',
   }
 
   target_include_dir = cache.get_include_dir()

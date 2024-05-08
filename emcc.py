@@ -105,15 +105,26 @@ class EmccState:
     self.has_dash_c = False
     self.has_dash_E = False
     self.has_dash_S = False
+    # List of link options paired with their position on the command line [(i, option), ...].
     self.link_flags = []
     self.lib_dirs = []
-    self.forced_stdlibs = []
 
-  def add_link_flag(self, i, f):
-    if f.startswith('-L'):
-      self.lib_dirs.append(f[2:])
+  def has_link_flag(self, f):
+    return f in [x for _, x in self.link_flags]
 
-    self.link_flags.append((i, f))
+  def add_link_flag(self, i, flag):
+    if flag.startswith('-L'):
+      self.lib_dirs.append(flag[2:])
+    # Link flags should be adding in strictly ascending order
+    assert not self.link_flags or i > self.link_flags[-1][0], self.link_flags
+    self.link_flags.append((i, flag))
+
+  def append_link_flag(self, flag):
+    if self.link_flags:
+      index = self.link_flags[-1][0] + 1
+    else:
+      index = 1
+    self.add_link_flag(index, flag)
 
 
 class EmccOptions:
@@ -287,6 +298,9 @@ def apply_user_settings():
     if key == 'WASM_OBJECT_FILES':
       settings.LTO = 0 if value else 'full'
 
+    if key == 'JSPI':
+      settings.ASYNCIFY = 2
+
 
 def cxx_to_c_compiler(cxx):
   # Convert C++ compiler name into C compiler name
@@ -358,12 +372,13 @@ def get_clang_flags(user_args):
   if settings.RELOCATABLE and '-fPIC' not in user_args:
     flags.append('-fPIC')
 
-  # We use default visiibilty=default in emscripten even though the upstream
-  # backend defaults visibility=hidden.  This matched the expectations of C/C++
-  # code in the wild which expects undecorated symbols to be exported to other
-  # DSO's by default.
-  if not any(a.startswith('-fvisibility') for a in user_args):
-    flags.append('-fvisibility=default')
+  if settings.RELOCATABLE or settings.LINKABLE or '-fPIC' in user_args:
+    if not any(a.startswith('-fvisibility') for a in user_args):
+      # For relocatable code we default to visibility=default in emscripten even
+      # though the upstream backend defaults visibility=hidden.  This matches the
+      # expectations of C/C++ code in the wild which expects undecorated symbols
+      # to be exported to other DSO's by default.
+      flags.append('-fvisibility=default')
 
   if settings.LTO:
     if not any(a.startswith('-flto') for a in user_args):
@@ -1277,9 +1292,9 @@ def parse_args(newargs):
     elif check_arg('--source-map-base'):
       options.source_map_base = consume_arg()
     elif check_arg('--embind-emit-tsd'):
-      options.embind_emit_tsd = consume_arg()
+      diagnostics.warning('deprecated', '--embind-emit-tsd is deprecated.  Use --emit-tsd instead.')
+      options.emit_tsd = consume_arg()
     elif check_arg('--emit-tsd'):
-      diagnostics.warning('experimental', '--emit-tsd is still experimental. Not all definitions are generated.')
       options.emit_tsd = consume_arg()
     elif check_flag('--no-entry'):
       options.no_entry = True

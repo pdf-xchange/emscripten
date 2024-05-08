@@ -21,19 +21,25 @@
 // new function with an '_', it will not be found.
 
 addToLibrary({
-  // JS aliases for native stack manipulation functions
+  // JS aliases for native stack manipulation functions and tempret handling
   $stackSave__deps: ['emscripten_stack_get_current'],
   $stackSave: () => _emscripten_stack_get_current(),
   $stackRestore__deps: ['_emscripten_stack_restore'],
   $stackRestore: (val) => __emscripten_stack_restore(val),
   $stackAlloc__deps: ['_emscripten_stack_alloc'],
   $stackAlloc: (sz) => __emscripten_stack_alloc(sz),
+  $getTempRet0__deps: ['_emscripten_tempret_get'],
+  $getTempRet0: (val) => __emscripten_tempret_get(),
+  $setTempRet0__deps: ['_emscripten_tempret_set'],
+  $setTempRet0: (val) => __emscripten_tempret_set(val),
 
-  // Aliases that allow legacy names (without leading $) for these
-  // stack functions to continue to work in `__deps` entries.
+  // Aliases that allow legacy names (without leading $) for the
+  // functions to continue to work in `__deps` entries.
   stackAlloc: '$stackAlloc',
   stackSave: '$stackSave',
   stackRestore: '$stackSave',
+  setTempRet0: '$setTempRet0',
+  getTempRet0: '$getTempRet0',
 
   $ptrToString: (ptr) => {
 #if ASSERTIONS
@@ -76,6 +82,9 @@ addToLibrary({
     'proc_exit',
 #if ASSERTIONS || EXIT_RUNTIME
     '$keepRuntimeAlive',
+#endif
+#if PTHREADS
+    '$exitOnMainThread',
 #endif
 #if PTHREADS_DEBUG
     '$runtimeKeepaliveCounter',
@@ -389,11 +398,10 @@ addToLibrary({
   // ==========================================================================
 
 #if !STANDALONE_WASM
-  // TODO: There are currently two abort() functions that get imported to asm
-  // module scope: the built-in runtime function abort(), and this library
-  // function _abort(). Remove one of these, importing two functions for the
-  // same purpose is wasteful.
-  abort: () => {
+  // Used to implement the native `abort` symbol.  Note that we use the
+  // JavaScript `abort` helper in order to implement this function, but we use a
+  // distinct name here to avoid confusing the two.
+  _abort_js: () => {
 #if ASSERTIONS
     abort('native code called abort()');
 #else
@@ -407,8 +415,8 @@ addToLibrary({
   $ENV: {},
 
   // In -Oz builds, we replace memcpy() altogether with a non-unrolled wasm
-  // variant, so we should never emit emscripten_memcpy_js() in the build.
-  // In STANDALONE_WASM we avoid the emscripten_memcpy_js dependency so keep
+  // variant, so we should never emit _emscripten_memcpy_js() in the build.
+  // In STANDALONE_WASM we avoid the _emscripten_memcpy_js dependency so keep
   // the wasm file standalone.
   // In BULK_MEMORY mode we include native versions of these functions based
   // on memory.fill and memory.copy.
@@ -429,11 +437,11 @@ addToLibrary({
   //   AppleWebKit/605.1.15 Safari/604.1 Version/13.0.4 iPhone OS 13_3 on iPhone 6s with iOS 13.3
   //   AppleWebKit/605.1.15 Version/13.0.3 Intel Mac OS X 10_15_1 on Safari 13.0.3 (15608.3.10.1.4) on macOS Catalina 10.15.1
   // Hence the support status of .copyWithin() for Safari version range [10.0.0, 10.1.0] is unknown.
-  emscripten_memcpy_js: `= Uint8Array.prototype.copyWithin
+  _emscripten_memcpy_js: `= Uint8Array.prototype.copyWithin
     ? (dest, src, num) => HEAPU8.copyWithin(dest, src, src + num)
     : (dest, src, num) => HEAPU8.set(HEAPU8.subarray(src, src+num), dest)`,
 #else
-  emscripten_memcpy_js: (dest, src, num) => HEAPU8.copyWithin(dest, src, src + num),
+  _emscripten_memcpy_js: (dest, src, num) => HEAPU8.copyWithin(dest, src, src + num),
 #endif
 
 #endif
@@ -618,7 +626,11 @@ addToLibrary({
     return ret;
   },
 
-  _tzset_js__deps: ['$stringToUTF8'],
+  _tzset_js__deps: ['$stringToUTF8',
+#if ASSERTIONS
+    '$lengthBytesUTF8',
+#endif
+  ],
   _tzset_js__internal: true,
   _tzset_js: (timezone, daylight, std_name, dst_name) => {
     // TODO: Use (malleable) environment variables instead of system settings.
@@ -645,12 +657,15 @@ addToLibrary({
 
     {{{ makeSetValue('daylight', '0', 'Number(winterOffset != summerOffset)', 'i32') }}};
 
-    function extractZone(date) {
-      var match = date.toTimeString().match(/\(([A-Za-z ]+)\)$/);
-      return match ? match[1] : "GMT";
-    };
+    var extractZone = (date) => date.toLocaleTimeString(undefined, {hour12:false, timeZoneName:'short'}).split(' ')[1];
     var winterName = extractZone(winter);
     var summerName = extractZone(summer);
+#if ASSERTIONS
+    assert(winterName);
+    assert(summerName);
+    assert(lengthBytesUTF8(winterName) <= {{{ cDefs.TZNAME_MAX }}}, `timezone name truncated to fit in TZNAME_MAX (${winterName})`);
+    assert(lengthBytesUTF8(summerName) <= {{{ cDefs.TZNAME_MAX }}}, `timezone name truncated to fit in TZNAME_MAX (${summerName})`);
+#endif
     if (summerOffset < winterOffset) {
       // Northern hemisphere
       stringToUTF8(winterName, std_name, {{{ cDefs.TZNAME_MAX + 1 }}});
@@ -2451,15 +2466,6 @@ addToLibrary({
     else return lengthBytesUTF8(str);
   },
 
-  emscripten_get_module_name__deps: ['$stringToUTF8'],
-  emscripten_get_module_name: (buf, length) => {
-#if MINIMAL_RUNTIME
-    return stringToUTF8('{{{ TARGET_BASENAME }}}.wasm', buf, length);
-#else
-    return stringToUTF8(wasmBinaryFile, buf, length);
-#endif
-  },
-
 #if USE_ASAN || USE_LSAN || UBSAN_RUNTIME
   // When lsan or asan is enabled withBuiltinMalloc temporarily replaces calls
   // to malloc, free, and memalign.
@@ -2740,9 +2746,7 @@ addToLibrary({
   $dynCallLegacy__deps: ['$createDyncallWrapper'],
 #endif
   $dynCallLegacy: (sig, ptr, args) => {
-#if MEMORY64
-    sig = sig.replace(/p/g, 'j')
-#endif
+    sig = sig.replace(/p/g, {{{ MEMORY64 ? "'j'" : "'i'" }}})
 #if ASSERTIONS
 #if MINIMAL_RUNTIME
     assert(typeof dynCalls != 'undefined', 'Global dynCalls dictionary was not generated in the build! Pass -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$dynCall linker flag to include it!');
@@ -2817,6 +2821,8 @@ addToLibrary({
 #endif
 #if MEMORY64
     return sig[0] == 'p' ? Number(rtn) : rtn;
+#elif CAN_ADDRESS_2GB
+    return sig[0] == 'p' ? rtn >>> 0 : rtn;
 #else
     return rtn;
 #endif
@@ -2938,17 +2944,9 @@ addToLibrary({
 
   // Use program_invocation_short_name and program_invocation_name in compiled
   // programs. This function is for implementing them.
-#if !MINIMAL_RUNTIME
-  _emscripten_get_progname__deps: ['$stringToUTF8'],
-#endif
+  _emscripten_get_progname__deps: ['$getExecutableName', '$stringToUTF8'],
   _emscripten_get_progname: (str, len) => {
-#if !MINIMAL_RUNTIME
-#if ASSERTIONS
-    assert(typeof str == 'number');
-    assert(typeof len == 'number');
-#endif
-    stringToUTF8(thisProgram, str, len);
-#endif
+    stringToUTF8(getExecutableName(), str, len);
   },
 
   emscripten_console_log: (str) => {
@@ -3108,17 +3106,14 @@ addToLibrary({
 
 #else // MINIMAL_RUNTIME
   // MINIMAL_RUNTIME doesn't support the runtimeKeepalive stuff
-  $callUserCallback: (func) => {
-    func();
-  },
+  $callUserCallback: (func) => func(),
 #endif // MINIMAL_RUNTIME
 
   $asmjsMangle: (x) => {
-    var unmangledSymbols = {{{ buildStringArray(WASM_SYSTEM_EXPORTS) }}};
     if (x == '__main_argc_argv') {
       x = 'main';
     }
-    return x.startsWith('dynCall_') || unmangledSymbols.includes(x) ? x : '_' + x;
+    return x.startsWith('dynCall_') ? x : '_' + x;
   },
 
   $asyncLoad__docs: '/** @param {boolean=} noRunDep */',
@@ -3259,6 +3254,7 @@ addToLibrary({
   $getNativeTypeSize__deps: ['$POINTER_SIZE'],
   $getNativeTypeSize: {{{ getNativeTypeSize }}},
 
+  $wasmTable__docs: '/** @type {WebAssembly.Table} */',
 #if RELOCATABLE
   // In RELOCATABLE mode we create the table in JS.
   $wasmTable: `=new WebAssembly.Table({

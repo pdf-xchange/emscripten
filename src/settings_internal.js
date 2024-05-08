@@ -89,11 +89,11 @@ var USE_ASAN = false;
 // Whether embind has been enabled.
 var EMBIND = false;
 
+// Whether a TypeScript definition file has been requested.
+var EMIT_TSD = false;
+
 // Whether the main() function reads the argc/argv parameters.
 var MAIN_READS_PARAMS = true;
-
-// Name of the file containing the Fetch *.fetch.js, if relevant
-var FETCH_WORKER_FILE = '';
 
 var WASI_MODULE_NAME = "wasi_snapshot_preview1";
 
@@ -131,9 +131,6 @@ var USER_EXPORTED_FUNCTIONS = [];
 // name of the file containing wasm binary, if relevant
 var WASM_BINARY_FILE = '';
 
-// name of the file containing the pthread *.worker.js, if relevant
-var PTHREAD_WORKER_FILE = '';
-
 // name of the file containing the Wasm Worker *.ww.js, if relevant
 var WASM_WORKER_FILE = '';
 
@@ -169,11 +166,6 @@ var SUPPORTS_GLOBALTHIS = false;
 
 // Used to track whether target environment supports the 'Promise.any'.
 var SUPPORTS_PROMISE_ANY = false;
-
-// Wasm backend symbols that are considered system symbols and don't
-// have the normal C symbol name mangled applied (== prefix with an underscore)
-// (Also implicily on this list is any function that starts with string "dynCall_")
-var WASM_SYSTEM_EXPORTS = ['getTempRet0', 'setTempRet0'];
 
 // Internal: value of -flto argument (either full or thin)
 var LTO = 0;

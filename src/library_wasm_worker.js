@@ -73,7 +73,7 @@ addToLibrary({
     '$_wasmWorkerDelayedMessageQueue',
     '$_wasmWorkerRunPostMessage',
     '$_wasmWorkerAppendToQueue',
-    'emscripten_wasm_worker_initialize',
+    '_emscripten_wasm_worker_initialize',
 #if PTHREADS
     '__set_thread_state',
 #endif
@@ -96,7 +96,7 @@ addToLibrary({
     ___set_stack_limits(m['sb'] + m['sz'], m['sb']);
 #endif
     // Run the C side Worker initialization for stack and TLS.
-    _emscripten_wasm_worker_initialize(m['sb'], m['sz']);
+    __emscripten_wasm_worker_initialize(m['sb'], m['sz']);
 #if PTHREADS
     // Record that this Wasm Worker supports synchronous blocking in emscripten_futex_wake().
     ___set_thread_state(/*thread_ptr=*/0, /*is_main_thread=*/0, /*is_runtime_thread=*/0, /*supports_wait=*/0);
@@ -174,7 +174,7 @@ if (ENVIRONMENT_IS_WASM_WORKER) {
       'mem': wasmMemory,
 #else
       'wasm': wasmModule,
-      'js': Module['mainScriptUrlOrBlob'] || _scriptDir,
+      'js': Module['mainScriptUrlOrBlob'] || _scriptName,
       'wasmMemory': wasmMemory,
 #endif
       'sb': stackLowestAddress, // sb = stack bottom (lowest stack address, SP points at this when stack is full)

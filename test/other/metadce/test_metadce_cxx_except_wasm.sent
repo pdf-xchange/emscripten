@@ -1,5 +1,5 @@
-abort
-emscripten_memcpy_js
+_abort_js
+_emscripten_memcpy_js
 emscripten_resize_heap
 environ_get
 environ_sizes_get
