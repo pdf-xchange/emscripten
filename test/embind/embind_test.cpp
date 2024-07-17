@@ -1609,6 +1609,22 @@ HasExternalConstructor* createHasExternalConstructor(const std::string& str) {
     return new HasExternalConstructor(str);
 }
 
+class HasExternalConstructorNoCopy {
+private:
+    HasExternalConstructorNoCopy(int i) : m(i) {}
+    int m;
+public:
+    HasExternalConstructorNoCopy(HasExternalConstructorNoCopy&) = delete;
+    HasExternalConstructorNoCopy(HasExternalConstructorNoCopy&&) = default;
+    int getInt() {
+        return m;
+    }
+    static HasExternalConstructorNoCopy create(int i) {
+        HasExternalConstructorNoCopy obj(i);
+        return obj;
+    }
+};
+
 template<typename T>
 class CustomSmartPtr {
 public:
@@ -2411,6 +2427,11 @@ EMSCRIPTEN_BINDINGS(tests) {
         .function("getString", &HasExternalConstructor::getString)
         ;
 
+    class_<HasExternalConstructorNoCopy>("HasExternalConstructorNoCopy")
+        .constructor(&HasExternalConstructorNoCopy::create)
+        .function("getInt", &HasExternalConstructorNoCopy::getInt)
+        ;
+
     auto HeldBySmartPtr_class = class_<HeldBySmartPtr>("HeldBySmartPtr");
     HeldBySmartPtr_class
         .smart_ptr<CustomSmartPtr<HeldBySmartPtr>>("CustomSmartPtr<HeldBySmartPtr>")
@@ -2843,7 +2864,7 @@ EMSCRIPTEN_BINDINGS(noncopyable) {
         .function("method", &Noncopyable::method)
         ;
 
-    function("getNoncopyable", &getNoncopyable);
+    function("getNoncopyable", &getNoncopyable, return_value_policy::take_ownership());
 }
 
 struct HasReadOnlyProperty {

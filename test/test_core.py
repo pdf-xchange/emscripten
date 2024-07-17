@@ -28,7 +28,7 @@ from common import skip_if, no_windows, no_mac, is_slow_test, parameterized, par
 from common import env_modify, with_env_modify, disabled, flaky, node_pthreads, also_with_wasm_bigint
 from common import read_file, read_binary, requires_v8, requires_node, requires_wasm2js, requires_node_canary
 from common import compiler_for, crossplatform, no_4gb, no_2gb, also_with_minimal_runtime
-from common import with_all_eh_sjlj, with_all_sjlj, also_with_standalone_wasm, can_do_standalone, no_wasm64
+from common import with_all_eh_sjlj, with_all_sjlj, also_with_standalone_wasm, can_do_standalone, no_wasm64, requires_wasm_exnref
 from common import NON_ZERO, WEBIDL_BINDER, EMBUILDER, PYTHON
 import clang_native
 
@@ -896,6 +896,7 @@ base align: 0, 0, 0, 0'''])
       self.skipTest('https://github.com/emscripten-core/emscripten/issues/21533')
     self.do_core_test('test_longjmp_zero.c')
 
+  @requires_wasm_exnref
   def test_longjmp_with_and_without_exceptions(self):
     # Emscripten SjLj with and without Emscripten EH support
     self.set_setting('SUPPORT_LONGJMP', 'emscripten')
@@ -908,13 +909,15 @@ base align: 0, 0, 0, 0'''])
     self.set_setting('SUPPORT_LONGJMP', 'wasm')
     if self.is_wasm2js():
       self.skipTest('wasm2js does not support wasm EH/SjLj')
-    self.require_wasm_eh()
     # FIXME Temporarily disabled. Enable this later when the bug is fixed.
     if '-fsanitize=address' in self.emcc_args:
       self.skipTest('Wasm EH does not work with asan yet')
     self.emcc_args.append('-fwasm-exceptions')
     for arg in ['-fwasm-exceptions', '-fno-exceptions']:
       self.do_core_test('test_longjmp.c', emcc_args=[arg])
+    # Wasm SjLj with and with new EH (exnref) support
+    self.set_setting('WASM_EXNREF')
+    self.do_core_test('test_longjmp.c', emcc_args=['-fwasm-exceptions'])
 
   @with_all_sjlj
   def test_longjmp2(self):
@@ -1031,6 +1034,7 @@ int main()
     self.maybe_closure()
     self.do_run_in_out_file_test('core/test_exceptions.cpp', out_suffix='_caught')
 
+  @requires_wasm_exnref
   def test_exceptions_with_and_without_longjmp(self):
     self.set_setting('EXCEPTION_DEBUG')
     self.maybe_closure()
@@ -1043,11 +1047,15 @@ int main()
     self.clear_setting('DISABLE_EXCEPTION_CATCHING')
     if self.is_wasm2js():
       self.skipTest('wasm2js does not support wasm EH/SjLj')
-    self.require_wasm_eh()
     # FIXME Temporarily disabled. Enable this later when the bug is fixed.
     if '-fsanitize=address' in self.emcc_args:
       self.skipTest('Wasm EH does not work with asan yet')
     self.emcc_args.append('-fwasm-exceptions')
+    for support_longjmp in [0, 'wasm']:
+      self.set_setting('SUPPORT_LONGJMP', support_longjmp)
+      self.do_run_in_out_file_test('core/test_exceptions.cpp', out_suffix='_caught')
+    # Wasm new EH (exnref) with and without Wasm SjLj support
+    self.set_setting('WASM_EXNREF')
     for support_longjmp in [0, 'wasm']:
       self.set_setting('SUPPORT_LONGJMP', support_longjmp)
       self.do_run_in_out_file_test('core/test_exceptions.cpp', out_suffix='_caught')
@@ -1557,6 +1565,7 @@ int main() {
       self.clear_setting('DISABLE_EXCEPTION_CATCHING')
       self.clear_setting('SUPPORT_LONGJMP')
       self.clear_setting('ASYNCIFY')
+      self.clear_setting('WASM_EXNREF')
 
     # Emscripten EH and Wasm EH cannot be enabled at the same time
     self.set_setting('DISABLE_EXCEPTION_CATCHING', 0)
@@ -2155,10 +2164,7 @@ int main(int argc, char **argv) {
   @no_4gb('depends on memory size')
   @no_2gb('depends on memory size')
   def test_module_wasm_memory(self):
-    if self.get_setting('MEMORY64') == 1:
-      self.emcc_args += ['--pre-js', test_file('core/test_module_wasm_memory64.js')]
-    else:
-      self.emcc_args += ['--pre-js', test_file('core/test_module_wasm_memory.js')]
+    self.emcc_args += ['--pre-js', test_file('core/test_module_wasm_memory.js')]
     self.set_setting('IMPORTED_MEMORY')
     self.set_setting('STRICT')
     self.set_setting('INCOMING_MODULE_JS_API', ['wasmMemory'])
@@ -2215,6 +2221,8 @@ int main(int argc, char **argv) {
   @no_wasm2js('massive switches can break js engines')
   @is_slow_test
   def test_biggerswitch(self):
+    if self.is_optimizing():
+      self.skipTest('https://github.com/emscripten-core/emscripten/issues/22179')
     if not self.is_optimizing():
       self.skipTest('nodejs takes >6GB to compile this if the wasm is not optimized, which OOMs, see https://github.com/emscripten-core/emscripten/issues/7928#issuecomment-458308453')
     num_cases = 20000
@@ -2689,8 +2697,6 @@ The current type of b is: 9
     self.do_core_test('test_strptime_days.c')
 
   def test_strptime_reentrant(self):
-    # needs to flush stdio streams
-    self.set_setting('EXIT_RUNTIME')
     self.do_core_test('test_strptime_reentrant.c')
 
   @crossplatform
@@ -3952,6 +3958,52 @@ ok
 
     self.do_runf('main.c', 'main\nfunc_a\nfunc_sub\nfunc_b\nfunc_sub\ndone\n')
 
+  @needs_dylink
+  def test_dlfcn_preload(self):
+    # Create chain of dependencies and load the first libary with preload plugin.
+    # main -> libb.so -> liba.so
+    create_file('liba.c', r'''
+      #include <stdio.h>
+      int liba_fun() {
+        return 23;
+      }
+    ''')
+    self.build_dlfcn_lib('liba.c', outfile='liba.so')
+
+    create_file('libb.c', r'''
+      #include <stdio.h>
+      int liba_fun();
+
+      int libb_fun() {
+        return liba_fun()*2;
+      }
+    ''')
+    self.build_dlfcn_lib('libb.c', outfile='libb.so', emcc_args=['liba.so'])
+
+    self.prep_dlfcn_main(['--preload-file', 'libb.so', '--use-preload-plugins', '-L.', '-sAUTOLOAD_DYLIBS=0', 'libb.so'])
+    create_file('main.c', r'''
+      #include <assert.h>
+      #include <dlfcn.h>
+      #include <stdio.h>
+      #include <sys/stat.h>
+
+      int main() {
+        // Check the file exists in the VFS
+        struct stat statbuf;
+        assert(stat("/libb.so", &statbuf) == 0);
+        void *lib_handle = dlopen("/libb.so", RTLD_LOCAL | RTLD_NOW);
+        assert(lib_handle);
+        typedef int (*intfunc)();
+        intfunc x = (intfunc)dlsym(lib_handle, "libb_fun");
+        assert(x);
+        assert(x() == 46);
+        printf("done\n");
+        return 0;
+
+      }
+    ''')
+    self.do_runf('main.c', 'done\n')
+
   def dylink_test(self, main, side, expected=None, header=None, force_c=False,
                   main_module=2, **kwargs):
     # Same as dylink_testf but take source code in string form
@@ -4046,6 +4098,7 @@ ok
     self.verify_in_strict_mode('main.js')
 
   @with_dylink_reversed
+  @no_wasm64('Requires table64 lowering in all cases')
   def test_dylink_basics_no_modify(self):
     if self.is_optimizing():
       self.skipTest('no modify mode only works with non-optimizing builds')
@@ -5416,11 +5469,7 @@ Module = {
 
     create_file('test.file', 'some data')
 
-    def clean(out):
-      return '\n'.join([line for line in out.split('\n') if 'binaryen' not in line and 'wasm' not in line and 'so not running' not in line])
-
-    self.do_runf('files.cpp', ('size: 7\ndata: 100,-56,50,25,10,77,123\nloop: 100 -56 50 25 10 77 123 \ninput:hi there!\ntexto\n$\n5 : 10,30,20,11,88\nother=some data.\nseeked=me da.\nseeked=ata.\nseeked=ta.\nfscanfed: 10 - hello\n5 bytes to dev/null: 5\nok.\ntexte\n', 'size: 7\ndata: 100,-56,50,25,10,77,123\nloop: 100 -56 50 25 10 77 123 \ninput:hi there!\ntexto\ntexte\n$\n5 : 10,30,20,11,88\nother=some data.\nseeked=me da.\nseeked=ata.\nseeked=ta.\nfscanfed: 10 - hello\n5 bytes to dev/null: 5\nok.\n'),
-                 output_nicerizer=clean)
+    self.do_run_in_out_file_test('test_files.c')
 
   def test_files_m(self):
     # Test for Module.stdin etc.
@@ -5670,17 +5719,14 @@ Module = {
     self.do_core_test('test_utf.c')
 
   def test_utf32(self):
-    self.set_setting('EXPORTED_RUNTIME_METHODS', ['UTF32ToString', 'stringToUTF32', 'lengthBytesUTF32'])
     self.do_runf('utf32.cpp', 'OK.')
     self.do_runf('utf32.cpp', 'OK.', args=['-fshort-wchar'])
 
   @crossplatform
   def test_utf16(self):
-    self.set_setting('EXPORTED_RUNTIME_METHODS', ['UTF16ToString', 'stringToUTF16'])
     self.do_runf('core/test_utf16.cpp', 'OK.')
 
   def test_utf8(self):
-    self.set_setting('EXPORTED_RUNTIME_METHODS', ['UTF8ToString', 'stringToUTF8', 'AsciiToString', 'stringToAscii'])
     self.do_runf('utf8.cpp', 'OK.')
 
   @also_with_wasm_bigint
@@ -5689,26 +5735,25 @@ Module = {
     self.do_runf('benchmark/benchmark_utf8.c', 'OK.')
 
   # Test that invalid character in UTF8 does not cause decoding to crash.
-  def test_utf8_invalid(self):
-    self.set_setting('EXPORTED_RUNTIME_METHODS', ['UTF8ToString', 'stringToUTF8'])
-    for decoder_mode in [[], ['-sTEXTDECODER']]:
-      self.emcc_args += decoder_mode
-      print(str(decoder_mode))
-      self.do_runf('utf8_invalid.cpp', 'OK.')
+  @parameterized({
+    '': [[]],
+    'textdecoder': [['-sTEXTDECODER']],
+  })
+  def test_utf8_invalid(self, args):
+    self.do_runf('utf8_invalid.cpp', 'OK.', emcc_args=args)
 
   # Test that invalid character in UTF8 does not cause decoding to crash.
   @no_asan('TODO: ASan support in minimal runtime')
-  def test_minimal_runtime_utf8_invalid(self):
-    self.set_setting('EXPORTED_RUNTIME_METHODS', ['UTF8ToString', 'stringToUTF8'])
+  @parameterized({
+    '': [[]],
+    'textdecoder': [['-sTEXTDECODER']],
+  })
+  def test_minimal_runtime_utf8_invalid(self, args):
     self.set_setting('MINIMAL_RUNTIME')
     self.emcc_args += ['--pre-js', test_file('minimal_runtime_exit_handling.js')]
-    for decoder_mode in [0, 1]:
-      self.set_setting('TEXTDECODER', decoder_mode)
-      print(str(decoder_mode))
-      self.do_runf('utf8_invalid.cpp', 'OK.')
+    self.do_runf('utf8_invalid.cpp', 'OK.', emcc_args=args)
 
   def test_utf16_textdecoder(self):
-    self.set_setting('EXPORTED_RUNTIME_METHODS', ['UTF16ToString', 'stringToUTF16', 'lengthBytesUTF16'])
     self.emcc_args += ['--embed-file', test_file('utf16_corpus.txt') + '@/utf16_corpus.txt']
     self.do_runf('benchmark/benchmark_utf16.cpp', 'OK.')
 
@@ -5822,6 +5867,7 @@ Module = {
     self.set_setting("FORCE_FILESYSTEM")
     self.do_runf('fs/test_fs_js_api.c', 'success')
 
+  @also_with_noderawfs
   def test_fs_write(self):
     if self.get_setting('WASMFS'):
       self.set_setting("FORCE_FILESYSTEM")
@@ -6071,7 +6117,7 @@ Module.onRuntimeInitialized = () => {
     self.do_runf('unistd/unlink.c', 'success')
 
   @parameterized({
-    'memfs': ([], False),
+    '': ([], False),
     'nodefs': (['-DNODEFS', '-lnodefs.js'], True)
   })
   def test_unistd_links(self, args, nodefs):
@@ -6813,12 +6859,11 @@ void* operator new(size_t size) {
     # See https://github.com/emscripten-core/emscripten/issues/20757
     self.emcc_args.append('-Wno-deprecated-declarations')
     poppler = self.get_poppler_library()
-    pdf_data = read_binary(test_file('poppler/paper.pdf'))
-    create_file('paper.pdf.js', str(list(bytearray(pdf_data))))
+    shutil.copyfile(test_file('poppler/paper.pdf'), 'paper.pdf')
 
     create_file('pre.js', '''
     Module.preRun = () => {
-      FS.createDataFile('/', 'paper.pdf', eval(read_('paper.pdf.js')), true, false, false);
+      FS.createDataFile('/', 'paper.pdf', readBinary('paper.pdf'), true, false, false);
     };
     Module.postRun = () => {
       var FileData = Array.from(MEMFS.getFileDataAsTypedArray(FS.root.contents['filename-1.ppm']));
@@ -7703,7 +7748,7 @@ void* operator new(size_t size) {
     # Export things on "TheModule". This matches the typical use pattern of
     # the bound library being used as Box2D.* or Ammo.*, and we cannot rely
     # on "Module" being always present (closure may remove it).
-    self.emcc_args += ['--post-js=glue.js', '--extern-post-js=extern-post.js']
+    self.emcc_args += ['-sEXPORTED_FUNCTIONS=_malloc,_free', '-sEXPORTED_RUNTIME_METHODS=stringToUTF8', '--post-js=glue.js', '--extern-post-js=extern-post.js']
     if mode == 'ALL':
       self.emcc_args += ['-sASSERTIONS']
     if allow_memory_growth:
@@ -8165,7 +8210,7 @@ Module.onRuntimeInitialized = () => {
   def test_async_ccall_promise(self, exit_runtime, asyncify):
     if asyncify == 2:
       self.require_jspi()
-      self.set_setting('ASYNCIFY_EXPORTS', ['stringf', 'floatf'])
+      self.set_setting('JSPI_EXPORTS', ['stringf', 'floatf'])
     self.set_setting('ASYNCIFY', asyncify)
     self.set_setting('EXIT_RUNTIME')
     self.set_setting('ASSERTIONS')
@@ -8342,7 +8387,7 @@ Module.onRuntimeInitialized = () => {
     # TODO Test with ASYNCIFY=1 https://github.com/emscripten-core/emscripten/issues/17552
     self.require_jspi()
     self.do_runf('core/test_pthread_join_and_asyncify.c', 'joining thread!\njoined thread!',
-                 emcc_args=['-sASYNCIFY_EXPORTS=run_thread',
+                 emcc_args=['-sJSPI_EXPORTS=run_thread',
                             '-sEXIT_RUNTIME=1',
                             '-pthread', '-sPROXY_TO_PTHREAD'])
 
@@ -9264,7 +9309,7 @@ NODEFS is no longer included by default; build with -lnodefs.js
     self.set_setting('USE_OFFSET_CONVERTER')
     self.set_setting('MODULARIZE')
     self.set_setting('EXPORT_NAME', 'foo')
-    create_file('post.js', 'foo();')
+    create_file('post.js', 'if (!isPthread) foo();')
     self.emcc_args += ['--extern-post-js', 'post.js']
     if '-g' in self.emcc_args:
       self.emcc_args += ['-DDEBUG']
@@ -9413,13 +9458,17 @@ NODEFS is no longer included by default; build with -lnodefs.js
     self.emcc_args += args
     self.emcc_args += ['--pre-js', 'pre.js']
     self.emcc_args += ['--js-library', 'lib.js']
-    # This test is for setting dynamicLibraries at runtime so we don't
+    # This test is for setting dynamicLibraries at runtime, so we don't
     # want emscripten loading `liblib.so` automatically (which it would
-    # do without this setting.
+    # do without this setting)
     self.set_setting('NO_AUTOLOAD_DYLIBS')
 
     create_file('pre.js', '''
-      Module['dynamicLibraries'] = ['liblib.so'];
+      if (typeof ENVIRONMENT_IS_PTHREAD == 'undefined' || !ENVIRONMENT_IS_PTHREAD) {
+        // Load liblib.so on the main thread, this would be equivalent to
+        // defining it outside the module (e.g. in MODULARIZE mode).
+        Module['dynamicLibraries'] = ['liblib.so'];
+      }
     ''')
 
     create_file('lib.js', '''

@@ -292,7 +292,7 @@ def apply_user_settings():
 
     if key == 'EXPORTED_FUNCTIONS':
       # used for warnings in emscripten.py
-      settings.USER_EXPORTED_FUNCTIONS = settings.EXPORTED_FUNCTIONS.copy()
+      settings.USER_EXPORTS = settings.EXPORTED_FUNCTIONS.copy()
 
     # TODO(sbc): Remove this legacy way.
     if key == 'WASM_OBJECT_FILES':
@@ -300,6 +300,10 @@ def apply_user_settings():
 
     if key == 'JSPI':
       settings.ASYNCIFY = 2
+    if key == 'JSPI_IMPORTS':
+      settings.ASYNCIFY_IMPORTS = value
+    if key == 'JSPI_EXPORTS':
+      settings.ASYNCIFY_EXPORTS = value
 
 
 def cxx_to_c_compiler(cxx):
@@ -613,6 +617,10 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
   if '-print-search-dirs' in newargs or '--print-search-dirs' in newargs:
     print(f'programs: ={config.LLVM_ROOT}')
     print(f'libraries: ={cache.get_lib_dir(absolute=True)}')
+    return 0
+
+  if '-print-resource-dir' in newargs:
+    shared.check_call([clang] + newargs)
     return 0
 
   if '-print-libgcc-file-name' in newargs or '--print-libgcc-file-name' in newargs:

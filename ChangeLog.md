@@ -18,8 +18,57 @@ to browse the changes between the tags.
 
 See docs/process.md for more on how version tagging works.
 
-3.1.59 (in development)
+3.1.64 (in development)
 -----------------------
+
+3.1.63 - 07/12/24
+-----------------
+- Fix html5 input event bug that was introduced in 3.1.62. (#22201)
+- Fix webpack + pthreads bug that was introduced in 3.1.60. (#22165)
+
+3.1.62 - 07/02/24
+-----------------
+- The `EM_BOOL` type changed from `int/u32` to `bool/u8`.  This changes the
+  layout and size of some structs in the emscripten API. (#22157)
+- The `EMSCRIPTEN_FETCH_WAITABLE` flag along with the `emscripten_fetch_wait`
+  API were marked a deprecated.  These feature have not functions for several
+  years now. (#22138)
+- The internal `read_` function was removed.  We now just use `readBinary` or
+  `readAsync`. (#22080)
+- reference-types feature is now enabled by default in Emscripten, due to the
+  upstream LLVM change (https://github.com/llvm/llvm-project/pull/93261).
+- Emscripten now uses `strftime` from musl rather than using a custom
+  JavaScript implementation. (#21379)
+- Embind now supports return value policies for properties.
+
+3.1.61 - 05/31/24
+-----------------
+- The internal `readAsync` function now returns a promise rather than accepting
+  callback arguments.
+- The JSPI feature now uses the updated browser API for JSPI (available in
+  Chrome v126+). To support older versions of Chrome use Emscripten version
+  3.1.60 or earlier.
+- IDBFS mount has gained a new option { autoPersist: true }, which if passed,
+  changes the semantics of the IDBFS mount to automatically persist any changes
+  made to the filesystem. (#21938)
+
+3.1.60 - 05/20/24
+-----------------
+- Under nodefs, symbolic links to files outside of mount locations no longer work.
+  This reverts the previous behaviour added in #3277. (#21805)
+- The `EXPORTED_FUNCTIONS` list can now include JS library symbols even if they
+  have not been otherwise included (e.g. via `DEFAULT_LIBRARY_FUNCS_TO_INCLUDE`).
+  (#21867)
+- Due to the upstream LLVM changes
+  (https://github.com/llvm/llvm-project/pull/80923 and
+  https://github.com/llvm/llvm-project/pull/90792), multivalue feature is now
+  enabled by default in Emscripten. This only enables the language features and
+  does not turn on the multivalue ABI.
+- Embind now supports return value policies to better define object lifetimes.
+  See https://emscripten.org/docs/porting/connecting_cpp_and_javascript/embind.html#object-ownership for more information.
+
+3.1.59 - 04/30/24
+-----------------
 - Fix the location of the dummy `.worker.js` file that is now generated as part
   of pthread builds so that is generated alongside the main JavaScript file.
   See #21701. ()
@@ -1218,7 +1267,7 @@ See docs/process.md for more on how version tagging works.
   their own secondary sysroot may be able to simplify their build system by
   removing this completely and relying on the new default.
 - Reinstated the warning on linker-only `-s` settings passed when not linking
-  (i.e. when compiling with `-c`).  As before this can disabled with
+  (i.e. when compiling with `-c`).  As before this can be disabled with
   `-Wno-unused-command-line-argument` (#14182).
 - Standalone wasm mode no longer does extra binaryen work during link. It used
   to remove unneeded imports, in hopes of avoiding nonstandard imports that

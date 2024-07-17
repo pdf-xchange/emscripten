@@ -52,10 +52,6 @@ DEFAULT_ASYNCIFY_IMPORTS = ['__asyncjs__*']
 DEFAULT_ASYNCIFY_EXPORTS = [
   'main',
   '__main_argc_argv',
-  # Embind's async template wrapper functions. These functions are usually in
-  # the function pointer table and not called from exports, but we need to name
-  # them so the JSPI pass can find and convert them.
-  '_ZN10emscripten8internal5async*'
 ]
 
 VALID_ENVIRONMENTS = ('web', 'webview', 'worker', 'node', 'shell')
@@ -395,15 +391,12 @@ def get_binaryen_passes():
     if settings.ASYNCIFY_ONLY:
       check_human_readable_list(settings.ASYNCIFY_ONLY)
       passes += ['--pass-arg=asyncify-onlylist@%s' % ','.join(settings.ASYNCIFY_ONLY)]
-  elif settings.ASYNCIFY == 2:
-    passes += ['--jspi']
-    passes += ['--pass-arg=jspi-imports@%s' % ','.join(settings.ASYNCIFY_IMPORTS)]
-    passes += ['--pass-arg=jspi-exports@%s' % ','.join(settings.ASYNCIFY_EXPORTS)]
-    if settings.SPLIT_MODULE:
-      passes += ['--pass-arg=jspi-split-module']
 
   if settings.MEMORY64 == 2:
     passes += ['--memory64-lowering']
+
+  if settings.MEMORY64:
+    passes += ['--table64-lowering']
 
   if settings.BINARYEN_IGNORE_IMPLICIT_TRAPS:
     passes += ['--ignore-implicit-traps']
@@ -426,6 +419,21 @@ def get_binaryen_passes():
     # unprefixed pass names
     extras = settings.BINARYEN_EXTRA_PASSES.split(',')
     passes += [('--' + p) if p[0] != '-' else p for p in extras if p]
+
+  # Run the translator to the new EH instructions with exnref
+  if settings.WASM_EXNREF:
+    passes += ['--emit-exnref']
+
+  # If we are going to run metadce then that means we will be running binaryen
+  # tools after the main invocation, whose flags are determined here
+  # (specifically we will run metadce and possibly also wasm-opt for import/
+  # export minification). And when we run such a tool it will "undo" any
+  # StackIR optimizations (since the conversion to BinaryenIR undoes them as it
+  # restructures the code). We could re-run those opts, but it is most efficient
+  # to just not do them now if we'll invoke other tools later, and we'll do them
+  # only in the very last invocation.
+  if will_metadce():
+    passes += ['--no-stack-ir']
 
   return passes
 
@@ -482,7 +490,7 @@ def setup_pthreads():
 
   default_setting('DEFAULT_PTHREAD_STACK_SIZE', settings.STACK_SIZE)
 
-  # Functions needs to be exported from the module since they are used in worker.js
+  # Functions needs by runtime_pthread.js
   settings.REQUIRED_EXPORTS += [
     '_emscripten_thread_free_data',
     '_emscripten_thread_crashed',
@@ -680,13 +688,6 @@ def phase_linker_setup(options, state, newargs):
   options.extern_pre_js = read_js_files(options.extern_pre_js)
   options.extern_post_js = read_js_files(options.extern_post_js)
 
-  if settings.PTHREADS:
-    # Don't run extern pre/post code on pthreads.
-    if options.extern_pre_js:
-      options.extern_pre_js = 'if (!isPthread) {' + options.extern_pre_js + '}'
-    if options.extern_post_js:
-      options.extern_post_js = 'if (!isPthread) {' + options.extern_post_js + '}'
-
   # TODO: support source maps with js_transform
   if options.js_transform and settings.GENERATE_SOURCE_MAP:
     logger.warning('disabling source maps because a js transform is being done')
@@ -807,7 +808,7 @@ def phase_linker_setup(options, state, newargs):
     # 2. If the user doesn't export anything we default to exporting `_main` (unless `--no-entry`
     #    is specified (see above).
     if 'EXPORTED_FUNCTIONS' in user_settings:
-      if '_main' in settings.USER_EXPORTED_FUNCTIONS:
+      if '_main' in settings.USER_EXPORTS:
         settings.EXPORTED_FUNCTIONS.remove('_main')
         settings.EXPORT_IF_DEFINED.append('main')
       else:
@@ -998,7 +999,7 @@ def phase_linker_setup(options, state, newargs):
   if settings.MAIN_MODULE == 1 or settings.SIDE_MODULE == 1:
     settings.LINKABLE = 1
 
-  if settings.LINKABLE and settings.USER_EXPORTED_FUNCTIONS:
+  if settings.LINKABLE and settings.USER_EXPORTS:
     diagnostics.warning('unused-command-line-argument', 'EXPORTED_FUNCTIONS is not valid with LINKABLE set (normally due to SIDE_MODULE=1/MAIN_MODULE=1) since all functions are exported this mode.  To export only a subset use SIDE_MODULE=2/MAIN_MODULE=2')
 
   if settings.MAIN_MODULE:
@@ -1338,6 +1339,9 @@ def phase_linker_setup(options, state, newargs):
   if settings.MEMORY64:
     # Any "pointers" passed to JS will now be i64's, in both modes.
     settings.WASM_BIGINT = 1
+
+  if settings.MEMORY64 and settings.RELOCATABLE:
+    settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE.append('__table_base32')
 
   if settings.WASM_WORKERS:
     settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$_wasmWorkerInitializeRuntime']
@@ -1792,8 +1796,7 @@ def phase_linker_setup(options, state, newargs):
     # JS, you may need to manipulate the refcount manually not to leak memory.
     # What you need to do is different depending on the kind of EH you use
     # (https://github.com/emscripten-core/emscripten/issues/17115).
-    settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$getExceptionMessage', '$incrementExceptionRefcount', '$decrementExceptionRefcount']
-    settings.EXPORTED_FUNCTIONS += ['getExceptionMessage', '$incrementExceptionRefcount', '$decrementExceptionRefcount']
+    settings.EXPORTED_FUNCTIONS += ['getExceptionMessage', 'incrementExceptionRefcount', 'decrementExceptionRefcount']
     if settings.WASM_EXCEPTIONS:
       settings.REQUIRED_EXPORTS += ['__cpp_exception']
 
@@ -1961,11 +1964,15 @@ def run_embind_gen(wasm_target, js_syms, extra_settings):
   outfile_js = in_temp('tsgen_a.out.js')
   # The Wasm outfile may be modified by emscripten.emscript, so use a temporary file.
   outfile_wasm = in_temp('tsgen_a.out.wasm')
-  emscripten.emscript(wasm_target, outfile_wasm, outfile_js, js_syms, False)
+  emscripten.emscript(wasm_target, outfile_wasm, outfile_js, js_syms, finalize=False)
   # Build the flags needed by Node.js to properly run the output file.
   node_args = []
   if settings.MEMORY64:
     node_args += shared.node_memory64_flags()
+    # Currently we don't have any engines that support table64 so we need
+    # to lower it in order to run the output.
+    # In the normal flow this happens later in `phase_binaryen`
+    building.run_wasm_opt(outfile_wasm, outfile_wasm, ['--table64-lowering'])
   if settings.WASM_EXCEPTIONS:
     node_args += shared.node_exception_flags(config.NODE_JS)
   # Run the generated JS file with the proper flags to generate the TypeScript bindings.
@@ -2046,7 +2053,7 @@ def create_worker_file(input_file, target_dir, output_file, options):
 
   # Minify the worker JS file, if JS minification is enabled.
   if settings.MINIFY_WHITESPACE:
-    contents = building.acorn_optimizer(output_file, ['--minify-whitespace'], return_output=True)
+    contents = building.acorn_optimizer(output_file, ['--minify-whitespace'], return_output=True, worker_js=True)
     write_file(output_file, contents)
 
   tools.line_endings.convert_line_endings_in_file(output_file, os.linesep, options.output_eol)
@@ -2067,6 +2074,7 @@ def phase_final_emitting(options, state, target, wasm_target):
 // to allow build systems to transition away from depending on it.
 //
 // Future versions of emscripten will likely stop generating this file at all.
+throw new Error('Dummy worker.js file should never be used');
 ''')
 
   # Deploy the Wasm Worker bootstrap file as an output file (*.ww.js)
@@ -2078,7 +2086,7 @@ def phase_final_emitting(options, state, target, wasm_target):
     create_worker_file('src/audio_worklet.js', target_dir, settings.AUDIO_WORKLET_FILE, options)
 
   if settings.MODULARIZE:
-    modularize(options)
+    modularize()
   elif settings.USE_CLOSURE_COMPILER:
     module_export_name_substitution()
 
@@ -2105,8 +2113,6 @@ def phase_final_emitting(options, state, target, wasm_target):
     src = read_file(final_js)
     final_js += '.epp.js'
     with open(final_js, 'w', encoding='utf-8') as f:
-      if settings.PTHREADS and (options.extern_pre_js or options.extern_post_js):
-        f.write(make_pthread_detection())
       f.write(options.extern_pre_js)
       f.write(src)
       f.write(options.extern_post_js)
@@ -2229,11 +2235,15 @@ def phase_binaryen(target, options, wasm_target):
     if options.use_closure_compiler:
       with ToolchainProfiler.profile_block('closure_compile'):
         final_js = building.closure_compiler(final_js, extra_closure_args=options.closure_args)
-      save_intermediate_with_wasm('closure', wasm_target)
+      save_intermediate('closure')
+
     if settings.TRANSPILE:
       with ToolchainProfiler.profile_block('transpile'):
         final_js = building.transpile(final_js)
-      save_intermediate_with_wasm('traspile', wasm_target)
+      save_intermediate('transpile')
+      # Run acorn one more time to minify whitespace after babel runs
+      if settings.MINIFY_WHITESPACE:
+        final_js = building.acorn_optimizer(final_js, ['--minify-whitespace'])
 
   if settings.ASYNCIFY_LAZY_LOAD_CODE:
     with ToolchainProfiler.profile_block('asyncify_lazy_load_code'):
@@ -2344,34 +2354,7 @@ def node_pthread_detection():
     return "require('worker_threads').workerData === 'em-pthread'\n"
 
 
-def make_pthread_detection():
-  """Create code for detecting if we are running in a pthread.
-
-  Normally this detection is done when the module is itself is run but there
-  are some cases were we need to do this detection outside of the normal
-  module code.
-
-  1. When running in MODULARIZE mode we need use this to know if we should
-     run the module constructor on startup (true only for pthreads)
-  2. When using `--extern-pre-js` and `--extern-post-js` we need to avoid
-     running this code on pthreads.
-  """
-
-  if settings.ENVIRONMENT_MAY_BE_WEB or settings.ENVIRONMENT_MAY_BE_WORKER:
-    code = "var isPthread = globalThis.self?.name === 'em-pthread';\n"
-    # In order to support both web and node we also need to detect node here.
-    if settings.ENVIRONMENT_MAY_BE_NODE:
-      code += "var isNode = typeof globalThis.process?.versions?.node == 'string';\n"
-      code += f'if (isNode) isPthread = {node_pthread_detection()}\n'
-  elif settings.ENVIRONMENT_MAY_BE_NODE:
-    code = f'var isPthread = {node_pthread_detection()}\n'
-  else:
-    assert False
-
-  return code
-
-
-def modularize(options):
+def modularize():
   global final_js
   logger.debug(f'Modularizing, assigning to var {settings.EXPORT_NAME}')
   src = read_file(final_js)
@@ -2453,8 +2436,18 @@ else if (typeof define === 'function' && define['amd'])
 ''' % {'EXPORT_NAME': settings.EXPORT_NAME}
 
   if settings.PTHREADS:
-    if not options.extern_pre_js and not options.extern_post_js:
-      src += make_pthread_detection()
+    # Create code for detecting if we are running in a pthread.
+    # Normally this detection is done when the module is itself run but
+    # when running in MODULARIZE mode we need use this to know if we should
+    # run the module constructor on startup (true only for pthreads).
+    if settings.ENVIRONMENT_MAY_BE_WEB or settings.ENVIRONMENT_MAY_BE_WORKER:
+      src += "var isPthread = globalThis.self?.name === 'em-pthread';\n"
+      # In order to support both web and node we also need to detect node here.
+      if settings.ENVIRONMENT_MAY_BE_NODE:
+        src += "var isNode = typeof globalThis.process?.versions?.node == 'string';\n"
+        src += f'if (isNode) isPthread = {node_pthread_detection()}\n'
+    elif settings.ENVIRONMENT_MAY_BE_NODE:
+      src += f'var isPthread = {node_pthread_detection()}\n'
     src += '// When running as a pthread, construct a new instance on startup\n'
     src += 'isPthread && %s();\n' % settings.EXPORT_NAME
 
@@ -3102,6 +3095,8 @@ def run(linker_inputs, options, state, newargs):
         for sym in js_info['extraLibraryFuncs']:
           add_js_deps(sym)
         for sym in settings.EXPORTED_RUNTIME_METHODS:
+          add_js_deps(shared.demangle_c_symbol_name(sym))
+        for sym in settings.EXPORTED_FUNCTIONS:
           add_js_deps(shared.demangle_c_symbol_name(sym))
     if settings.ASYNCIFY:
       settings.ASYNCIFY_IMPORTS_EXCEPT_JS_LIBS = settings.ASYNCIFY_IMPORTS[:]

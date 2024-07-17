@@ -63,7 +63,6 @@ EMTEST_RETRY_FLAKY = None
 EMTEST_LACKS_NATIVE_CLANG = None
 EMTEST_VERBOSE = None
 EMTEST_REBASELINE = None
-EMTEST_FORCE64 = None
 
 # Verbosity level control for subprocess calls to configure + make.
 # 0: disabled.
@@ -285,6 +284,16 @@ def requires_wasm_eh(func):
   return decorated
 
 
+def requires_wasm_exnref(func):
+  assert callable(func)
+
+  def decorated(self, *args, **kwargs):
+    self.require_wasm_exnref()
+    return func(self, *args, **kwargs)
+
+  return decorated
+
+
 def requires_v8(func):
   assert callable(func)
 
@@ -500,24 +509,29 @@ def also_with_standalone_wasm(impure=False):
 
 
 # Tests exception handling / setjmp/longjmp handling in Emscripten EH/SjLj mode
-# and if possible, new wasm EH/SjLj mode. This tests two combinations:
+# and new wasm EH/SjLj modes. This tests three combinations:
 # - Emscripten EH + Emscripten SjLj
-# - Wasm EH + Wasm SjLj
+# - Wasm EH + Wasm SjLj (Phase 3, to be deprecated)
+# - Wasm EH + Wasm SjLj (New proposal witn exnref, experimental)
 def with_all_eh_sjlj(f):
   assert callable(f)
 
   @wraps(f)
-  def metafunc(self, is_native, *args, **kwargs):
-    if is_native:
+  def metafunc(self, mode, *args, **kwargs):
+    if mode == 'wasm' or mode == 'wasm_exnref':
       # Wasm EH is currently supported only in wasm backend and V8
       if self.is_wasm2js():
         self.skipTest('wasm2js does not support wasm EH/SjLj')
-      self.require_wasm_eh()
       # FIXME Temporarily disabled. Enable this later when the bug is fixed.
       if '-fsanitize=address' in self.emcc_args:
         self.skipTest('Wasm EH does not work with asan yet')
       self.emcc_args.append('-fwasm-exceptions')
       self.set_setting('SUPPORT_LONGJMP', 'wasm')
+      if mode == 'wasm':
+        self.require_wasm_eh()
+      if mode == 'wasm_exnref':
+        self.require_wasm_exnref()
+        self.set_setting('WASM_EXNREF')
       f(self, *args, **kwargs)
     else:
       self.set_setting('DISABLE_EXCEPTION_CATCHING', 0)
@@ -529,8 +543,9 @@ def with_all_eh_sjlj(f):
       self.set_setting('DEFAULT_TO_CXX')
       f(self, *args, **kwargs)
 
-  parameterize(metafunc, {'': (False,),
-                          'wasm': (True,)})
+  parameterize(metafunc, {'emscripten': ('emscripten',),
+                          'wasm': ('wasm',),
+                          'wasm_exnref': ('wasm_exnref',)})
   return metafunc
 
 
@@ -540,22 +555,27 @@ def with_all_sjlj(f):
   assert callable(f)
 
   @wraps(f)
-  def metafunc(self, is_native):
-    if is_native:
+  def metafunc(self, mode):
+    if mode == 'wasm' or mode == 'wasm_exnref':
       if self.is_wasm2js():
         self.skipTest('wasm2js does not support wasm SjLj')
-      self.require_wasm_eh()
       # FIXME Temporarily disabled. Enable this later when the bug is fixed.
       if '-fsanitize=address' in self.emcc_args:
         self.skipTest('Wasm EH does not work with asan yet')
       self.set_setting('SUPPORT_LONGJMP', 'wasm')
+      if mode == 'wasm':
+        self.require_wasm_eh()
+      if mode == 'wasm_exnref':
+        self.require_wasm_exnref()
+        self.set_setting('WASM_EXNREF')
       f(self)
     else:
       self.set_setting('SUPPORT_LONGJMP', 'emscripten')
       f(self)
 
-  parameterize(metafunc, {'': (False,),
-                          'wasm': (True,)})
+  parameterize(metafunc, {'emscripten': ('emscripten',),
+                          'wasm': ('wasm',),
+                          'wasm_exnref': ('wasm_exnref',)})
   return metafunc
 
 
@@ -800,11 +820,12 @@ class RunnerCore(unittest.TestCase, metaclass=RunnerMeta):
     self.require_engine(nodejs)
     return nodejs
 
+  def node_is_canary(self, nodejs):
+    return nodejs and nodejs[0] and 'canary' in nodejs[0]
+
   def require_node_canary(self):
     nodejs = self.get_nodejs()
-    if nodejs:
-      version = shared.get_node_version(nodejs)
-      if version >= (20, 0, 0):
+    if self.node_is_canary(nodejs):
         self.require_engine(nodejs)
         return
 
@@ -877,6 +898,25 @@ class RunnerCore(unittest.TestCase, metaclass=RunnerMeta):
     else:
       self.fail('either d8 or node >= 17 required to run wasm-eh tests.  Use EMTEST_SKIP_EH to skip')
 
+  def require_wasm_exnref(self):
+    nodejs = self.get_nodejs()
+    if nodejs:
+      if self.node_is_canary(nodejs):
+        self.js_engines = [nodejs]
+        self.node_args.append('--experimental-wasm-exnref')
+        return
+
+    if config.V8_ENGINE and config.V8_ENGINE in self.js_engines:
+      self.emcc_args.append('-sENVIRONMENT=shell')
+      self.js_engines = [config.V8_ENGINE]
+      self.v8_args.append('--experimental-wasm-exnref')
+      return
+
+    if 'EMTEST_SKIP_EH' in os.environ:
+      self.skipTest('test requires canary or d8 (and EMTEST_SKIP_EH is set)')
+    else:
+      self.fail('either d8 or node canary required to run wasm-eh tests.  Use EMTEST_SKIP_EH to skip')
+
   def require_jspi(self):
     # emcc warns about stack switching being experimental, and we build with
     # warnings-as-errors, so disable that warning
@@ -893,10 +933,8 @@ class RunnerCore(unittest.TestCase, metaclass=RunnerMeta):
     exp_args = ['--experimental-wasm-stack-switching', '--experimental-wasm-type-reflection']
     nodejs = self.get_nodejs()
     if nodejs:
-      version = shared.get_node_version(nodejs)
-      # Support for JSPI came earlier than 19, but 19 is what currently works
-      # with emscripten's implementation.
-      if version >= (19, 0, 0):
+      # Support for JSPI came earlier than 22, but the new API changes are not yet in any node
+      if self.node_is_canary(nodejs):
         self.js_engines = [nodejs]
         self.node_args += exp_args
         return
@@ -908,9 +946,9 @@ class RunnerCore(unittest.TestCase, metaclass=RunnerMeta):
       return
 
     if 'EMTEST_SKIP_JSPI' in os.environ:
-      self.skipTest('test requires node >= 19 or d8 (and EMTEST_SKIP_JSPI is set)')
+      self.skipTest('test requires node canary or d8 (and EMTEST_SKIP_JSPI is set)')
     else:
-      self.fail('either d8 or node >= 19 required to run JSPI tests.  Use EMTEST_SKIP_JSPI to skip')
+      self.fail('either d8 or node canary required to run JSPI tests.  Use EMTEST_SKIP_JSPI to skip')
 
   def require_wasm2js(self):
     if self.is_wasm64():
@@ -944,6 +982,7 @@ class RunnerCore(unittest.TestCase, metaclass=RunnerMeta):
     self.js_engines = config.JS_ENGINES.copy()
     self.settings_mods = {}
     self.skip_exec = None
+    self.proxied = False
     self.emcc_args = ['-Wclosure', '-Werror', '-Wno-limited-postlink-optimizations']
     # TODO(https://github.com/emscripten-core/emscripten/issues/11121)
     # For historical reasons emcc compiles and links as C++ by default.
@@ -1111,7 +1150,7 @@ class RunnerCore(unittest.TestCase, metaclass=RunnerMeta):
   #                  libraries, for example
   def get_emcc_args(self, main_file=False, compile_only=False, asm_only=False):
     def is_ldflag(f):
-      return any(f.startswith(s) for s in ['-sENVIRONMENT=', '--pre-js=', '--post-js='])
+      return any(f.startswith(s) for s in ['-sEXPORT_ES6', '-sPROXY_TO_PTHREAD', '-sENVIRONMENT=', '--pre-js=', '--post-js=', '-sPTHREAD_POOL_SIZE='])
 
     args = self.serialize_settings(compile_only or asm_only) + self.emcc_args
     if asm_only:
@@ -1914,9 +1953,7 @@ def harness_server_func(in_queue, out_queue, port):
           To get logging to the console from browser tests, add this to
           print/printErr/the exception handler in src/shell.html:
 
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', encodeURI('http://localhost:8888?stdout=' + text));
-            xhr.send();
+            fetch(encodeURI('http://localhost:8888?stdout=' + text));
         '''
         print('[client logging:', unquote_plus(self.path), ']')
         self.send_response(200)
@@ -2230,7 +2267,7 @@ class BrowserCore(RunnerCore):
         # also include report_result.c and force-include report_result.h
         self.run_process([EMCC, '-c', '-I' + TEST_ROOT,
                           '-DEMTEST_PORT_NUMBER=%d' % self.port,
-                          test_file('report_result.c')] + self.get_emcc_args(compile_only=True))
+                          test_file('report_result.c')] + self.get_emcc_args(compile_only=True) + (['-fPIC'] if '-fPIC' in args else []))
         args += ['report_result.o', '-include', test_file('report_result.h')]
     if EMTEST_BROWSER == 'node':
       args.append('-DEMTEST_NODE')
@@ -2261,17 +2298,25 @@ class BrowserCore(RunnerCore):
 
   def btest(self, filename, expected=None, reference=None,
             reference_slack=0, manual_reference=None, post_build=None,
-            args=None, also_proxied=False,
-            url_suffix='', timeout=None,
+            args=None, url_suffix='', timeout=None,
             manually_trigger_reftest=False, extra_tries=1,
             reporting=Reporting.FULL,
             output_basename='test'):
     assert expected or reference, 'a btest must either expect an output, or have a reference image'
     if args is None:
       args = []
-    original_args = args
     args = args.copy()
     filename = find_browser_test_file(filename)
+
+    # Run via --proxy-to-worker.  This gets set by the @also_with_proxying.
+    if self.proxied:
+      if reference:
+        assert not manual_reference
+        manual_reference = True
+        manually_trigger_reftest = False
+        assert not post_build
+        post_build = self.post_manual_reftest
+      args += ['--proxy-to-worker', '-sGL_TESTING']
     if reference:
       reference = find_browser_test_file(reference)
       expected = [str(i) for i in range(0, reference_slack + 1)]
@@ -2298,17 +2343,6 @@ class BrowserCore(RunnerCore):
       self.assertContained('RESULT: ' + expected[0], output)
     else:
       self.run_browser(outfile + url_suffix, expected=['/report_result?' + e for e in expected], timeout=timeout, extra_tries=extra_tries)
-
-    if also_proxied:
-      print('proxied...')
-      if reference:
-        assert not manual_reference
-        manual_reference = True
-        assert not post_build
-        post_build = self.post_manual_reftest
-      # run proxied
-      self.btest(filename, expected, reference, reference_slack, manual_reference, post_build,
-                 original_args + ['--proxy-to-worker', '-sGL_TESTING'], timeout=timeout)
 
 
 ###################################################################################################
