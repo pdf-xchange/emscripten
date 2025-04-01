@@ -47,6 +47,7 @@
 // system libraries are built.
 // ASSERTIONS == 2 gives even more runtime checks, that may be very slow. That
 // includes internal dlmalloc assertions, for example.
+// ASSERTIONS defaults to 0 in optimized builds (-O1 and above).
 // [link]
 var ASSERTIONS = 1;
 
@@ -248,7 +249,6 @@ var MEMORY_GROWTH_LINEAR_STEP = -1;
 // using i64 pointers).
 // Assumes WASM_BIGINT.
 // [compile+link]
-// [experimental]
 var MEMORY64 = 0;
 
 // Sets the initial size of the table when MAIN_MODULE or SIDE_MODULE is use
@@ -336,25 +336,20 @@ var SAFE_HEAP_LOG = false;
 
 // Allows function pointers to be cast, wraps each call of an incorrect type
 // with a runtime correction.  This adds overhead and should not be used
-// normally.  It also forces ALIASING_FUNCTION_POINTERS to 0.  Aside from making
-// calls not fail, this tries to convert values as best it can.
-// We use 64 bits (i64) to represent values, as if we wrote the sent value to
-// memory and loaded the received type from the same memory (using
+// normally.  Aside from making calls not fail, this tries to convert values as
+// best it can.  We use 64 bits (i64) to represent values, as if we wrote the
+// sent value to memory and loaded the received type from the same memory (using
 // truncs/extends/ reinterprets). This means that when types do not match the
 // emulated values may not match (this is true of native too, for that matter -
 // this is all undefined behavior). This approaches appears good enough to
 // support Python, which is the main use case motivating this feature.
 // [link]
+// [deprecated]
 var EMULATE_FUNCTION_POINTER_CASTS = false;
 
 // Print out exceptions in emscriptened code.
 // [link]
 var EXCEPTION_DEBUG = false;
-
-// If 1, export `demangle` and `stackTrace` JS library functions.
-// [link]
-// [deprecated]
-var DEMANGLE_SUPPORT = false;
 
 // Print out when we enter a library call (library*.js). You can also unset
 // runtimeDebug at runtime for logging to cease, and can set it when you want
@@ -779,11 +774,12 @@ var EXPORT_EXCEPTION_HANDLING_HELPERS = false;
 // [link]
 var EXCEPTION_STACK_TRACES = false;
 
-// Emit instructions for the new Wasm exception handling proposal with exnref,
-// which was adopted on Oct 2023. The implementation of the new proposal is
-// still in progress and this feature is currently experimental.
+// If true, emit instructions for the legacy Wasm exception handling proposal:
+// https://github.com/WebAssembly/exception-handling/blob/main/proposals/exception-handling/legacy/Exceptions.md
+// If false, emit instructions for the standardized exception handling proposal:
+// https://github.com/WebAssembly/exception-handling/blob/main/proposals/exception-handling/Exceptions.md
 // [compile+link]
-var WASM_EXNREF = false;
+var WASM_LEGACY_EXCEPTIONS = true;
 
 // Emscripten throws an ExitStatus exception to unwind when exit() is called.
 // Without this setting enabled this can show up as a top level unhandled
@@ -795,7 +791,7 @@ var WASM_EXNREF = false;
 // desirable.
 //
 // [link]
-var NODEJS_CATCH_EXIT = true;
+var NODEJS_CATCH_EXIT = false;
 
 // Catch unhandled rejections in node. This only effect versions of node older
 // than 15.  Without this, old version node will print a warning, but exit
@@ -955,7 +951,7 @@ var JSPI_EXPORTS = [];
 // work. The imported function should return a ``Promise`` when doing
 // asynchronous work.
 //
-// Note when using ``--js-library``, the function can be marked with
+// Note when using JS library files, the function can be marked with
 // ``<function_name>_async:: true`` in the library instead of this setting.
 // [link]
 var JSPI_IMPORTS = [];
@@ -968,10 +964,6 @@ var JSPI_IMPORTS = [];
 // having "FS" in this list.
 // [link]
 var EXPORTED_RUNTIME_METHODS = [];
-
-// Deprecated, use EXPORTED_RUNTIME_METHODS instead.
-// [deprecated]
-var EXTRA_EXPORTED_RUNTIME_METHODS = [];
 
 // A list of incoming values on the Module object in JS that we care about. If
 // a value is not in this list, then we don't emit code to check if you provide
@@ -1007,7 +999,7 @@ var INCOMING_MODULE_JS_API = [
   'onRealloc', 'onRuntimeInitialized', 'postMainLoop', 'postRun', 'preInit',
   'preMainLoop', 'preRun',
   'preinitializedWebGLContext', 'preloadPlugins',
-  'print', 'printErr', 'quit', 'setStatus', 'statusMessage', 'stderr',
+  'print', 'printErr', 'setStatus', 'statusMessage', 'stderr',
   'stdin', 'stdout', 'thisProgram', 'wasm', 'wasmBinary', 'websocket'
 ];
 
@@ -1326,6 +1318,23 @@ var DETERMINISTIC = false;
 // --pre-js and --post-js happen to do that in non-MODULARIZE mode, their
 // intended usage is to add code that is optimized with the rest of the emitted
 // code, allowing better dead code elimination and minification.
+//
+// Experimental Feature - Instance ES Modules:
+//
+// Note this feature is still under active development and is subject to change!
+//
+// To enable this feature use -sMODULARIZE=instance. Enabling this mode will
+// produce an ES module that is a singleton with ES module exports. The
+// module will export a default value that is an async init function and will
+// also export named values that correspond to the Wasm exports and runtime
+// exports. The init function must be called before any of the exports can be
+// used. An example of using the module is below.
+//
+//   import init, { foo, bar } from "./my_module.mjs"
+//   await init(optionalArguments);
+//   foo();
+//   bar();
+//
 // [link]
 var MODULARIZE = false;
 
@@ -1336,13 +1345,6 @@ var MODULARIZE = false;
 //
 // [link]
 var EXPORT_ES6 = false;
-
-// Use the ES6 Module relative import feature 'import.meta.url'
-// to auto-detect WASM Module path.
-// It might not be supported on old browsers / toolchains. This setting
-// may not be disabled when Node.js is targeted (-sENVIRONMENT=*node*).
-// [link]
-var USE_ES6_IMPORT_META = true;
 
 // Global variable to export the module as for environments without a
 // standardized module loading system (e.g. the browser and SM shell).
@@ -1479,10 +1481,9 @@ var DYNCALLS = false;
 
 // WebAssembly integration with JavaScript BigInt. When enabled we don't need to
 // legalize i64s into pairs of i32s, as the wasm VM will use a BigInt where an
-// i64 is used. If WASM_BIGINT is present, the default minimum supported browser
-// versions will be increased to the min version that supports BigInt.
+// i64 is used.
 // [link]
-var WASM_BIGINT = false;
+var WASM_BIGINT = true;
 
 // WebAssembly defines a "producers section" which compilers and tools can
 // annotate themselves in, and LLVM emits this by default.
@@ -1636,9 +1637,13 @@ var USE_SQLITE3 = false;
 // [compile+link] - affects user code at compile and system libraries at link.
 var SHARED_MEMORY = false;
 
-// If true, enables support for Wasm Workers. Wasm Workers enable applications
+// If 1, enables support for Wasm Workers. Wasm Workers enable applications
 // to create threads using a lightweight web-specific API that builds on top
-// of Wasm SharedArrayBuffer + Atomics API.
+// of Wasm SharedArrayBuffer + Atomics API. When enabled, a new build output
+// file a.ww.js will be generated to bootstrap the Wasm Worker JS contexts.
+// If 2, enables support for Wasm Workers, but without using a separate a.ww.js
+// file on the side. This can simplify deployment of builds, but will have a
+// downside that the generated build will no longer be csp-eval compliant.
 // [compile+link] - affects user code at compile and system libraries at link.
 var WASM_WORKERS = 0;
 
@@ -1772,7 +1777,7 @@ var PTHREADS_DEBUG = false;
 // [link]
 var EVAL_CTORS = 0;
 
-// Is enabled, use the JavaScript TextDecoder API for string marshalling.
+// If enabled, use the JavaScript TextDecoder API for string marshalling.
 // Enabled by default, set this to 0 to disable.
 // If set to 2, we assume TextDecoder is present and usable, and do not emit
 // any JS code to fall back if it is missing. In single threaded -Oz build modes,
@@ -1875,7 +1880,8 @@ var AUTO_NATIVE_LIBRARIES = true;
 // for Firefox versions older than < majorVersion.
 // Firefox 79 was released on 2020-07-28.
 // MAX_INT (0x7FFFFFFF, or -1) specifies that target is not supported.
-// Minimum supported value is 34 which was released on 2014-12-01.
+// Minimum supported value is 40 which was released on 2015-09-11 (see
+// feature_matrix.py)
 // [link]
 var MIN_FIREFOX_VERSION = 79;
 
@@ -1889,9 +1895,10 @@ var MIN_FIREFOX_VERSION = 79;
 // older, i.e. iPhone 4s, iPad 2, iPad 3, iPad Mini 1, Pod Touch 5 and older,
 // see https://github.com/emscripten-core/emscripten/pull/7191.
 // MAX_INT (0x7FFFFFFF, or -1) specifies that target is not supported.
-// Minimum supported value is 90000 which was released in 2015.
+// Minimum supported value is 101000 which was released in 2016-09 (see
+// feature_matrix.py).
 // [link]
-var MIN_SAFARI_VERSION = 140100;
+var MIN_SAFARI_VERSION = 150000;
 
 // Specifies the oldest version of Chrome. E.g. pass -sMIN_CHROME_VERSION=58 to
 // drop support for Chrome 57 and older.
@@ -1899,7 +1906,8 @@ var MIN_SAFARI_VERSION = 140100;
 // numbers with Chrome.
 // Chrome 85 was released on 2020-08-25.
 // MAX_INT (0x7FFFFFFF, or -1) specifies that target is not supported.
-// Minimum supported value is 32, which was released on 2014-01-04.
+// Minimum supported value is 45, which was released on 2015-09-01 (see
+// feature_matrix.py).
 // [link]
 var MIN_CHROME_VERSION = 85;
 
@@ -1907,14 +1915,9 @@ var MIN_CHROME_VERSION = 85;
 // distinct from the minimum version required run the emscripten compiler.
 // This version aligns with the current Ubuuntu TLS 20.04 (Focal).
 // Version is encoded in MMmmVV, e.g. 181401 denotes Node 18.14.01.
-// Minimum supported value is 101900, which was released 2020-02-05.
+// Minimum supported value is 101900, which was released 2020-02-05 (see
+// feature_matrix.py).
 var MIN_NODE_VERSION = 160000;
-
-// Whether we support setting errno from JS library code.
-// In MINIMAL_RUNTIME builds, this option defaults to 0.
-// [link]
-// [deprecated]
-var SUPPORT_ERRNO = true;
 
 // If true, uses minimal sized runtime without POSIX features, Module,
 // preRun/preInit/etc., Emscripten built-in XHR loading or library_browser.js.
@@ -2010,6 +2013,7 @@ var MINIFY_HTML = true;
 // test_maybe_wasm2js test.  This option can be useful for debugging and
 // bisecting.
 // [link]
+// [deprecated]
 var MAYBE_WASM2JS = false;
 
 // This option is no longer used. The appropriate shadow memory size is now
@@ -2028,6 +2032,17 @@ var USE_OFFSET_CONVERTER = false;
 // Whether we should load the WASM source map at runtime.
 // This is enabled automatically when using -gsource-map with sanitizers.
 var LOAD_SOURCE_MAP = false;
+
+// List of path substitutions to apply in the "sources" field of the source map.
+// Corresponds to the ``--prefix`` option used in ``tools/wasm-sourcemap.py``.
+// Must be used with ``-gsource-map``.
+//
+// This setting allows to map path prefixes to the proper ones so that the final
+// (possibly relative) URLs point to the correct locations :
+// ``-sSOURCE_MAP_PREFIXES=/old/path=/new/path``
+//
+// [link]
+var SOURCE_MAP_PREFIXES = [];
 
 // Default to c++ mode even when run as ``emcc`` rather then ``emc++``.
 // When this is disabled ``em++`` is required linking C++ programs. Disabling
@@ -2134,7 +2149,9 @@ var TRUSTED_TYPES = false;
 // settings is *only* needed when also explicitly targeting older browsers.
 var POLYFILL = true;
 
-// If true, add tracing to core runtime functions.
+// If non-zero, add tracing to core runtime functions.  Can be set to 2 for
+// extra tracing (for example, tracing that occurs on each turn of the event
+// loop or each user callback, which can flood the console).
 // This setting is enabled by default if any of the following debugging settings
 // are enabled:
 // - PTHREADS_DEBUG
@@ -2148,7 +2165,7 @@ var POLYFILL = true;
 // - SOCKET_DEBUG
 // - FETCH_DEBUG
 // [link]
-var RUNTIME_DEBUG = false;
+var RUNTIME_DEBUG = 0;
 
 // Include JS library symbols that were previously part of the default runtime.
 // Without this, such symbols can be made available by adding them to
@@ -2164,17 +2181,12 @@ var LEGACY_RUNTIME = false;
 // [link]
 var SIGNATURE_CONVERSIONS = [];
 
-//===========================================
-// Internal, used for testing only, from here
-//===========================================
-
-// Internal (testing only): Disables the blitOffscreenFramebuffer VAO path.
+// Experimental support for wasm source phase imports.
+// This is only currently implemented in the pre-release/nightly version of node,
+// and not yet supported by browsers.
+// Requires EXPORT_ES6
 // [link]
-var OFFSCREEN_FRAMEBUFFER_FORBID_VAO_PATH = false;
-
-// Internal (testing only): Forces memory growing to fail.
-// [link]
-var TEST_MEMORY_GROWTH_FAILS = false;
+var SOURCE_PHASE_IMPORTS = false;
 
 // For renamed settings the format is:
 // [OLD_NAME, NEW_NAME]
@@ -2257,4 +2269,8 @@ var LEGACY_SETTINGS = [
   ['MIN_IE_VERSION', [0x7FFFFFFF], 'No longer supported'],
   ['WORKAROUND_OLD_WEBGL_UNIFORM_UPLOAD_IGNORED_OFFSET_BUG', [0], 'No longer supported'],
   ['AUTO_ARCHIVE_INDEXES', [0, 1], 'No longer needed'],
+  ['USE_ES6_IMPORT_META', [1], 'Disabling is no longer supported'],
+  ['EXTRA_EXPORTED_RUNTIME_METHODS', [[]], 'No longer supported, use EXPORTED_RUNTIME_METHODS'],
+  ['SUPPORT_ERRNO', [0], 'No longer supported'],
+  ['DEMANGLE_SUPPORT', [0], 'No longer supported'],
 ];

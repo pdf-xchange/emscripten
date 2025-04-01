@@ -18,6 +18,7 @@
 #include <cstdint> // uintptr_t
 #include <vector>
 #include <type_traits>
+#include <pthread.h>
 #if __cplusplus >= 202002L
 #include <coroutine>
 #include <variant>
@@ -284,7 +285,7 @@ private:
 static const char name##_symbol[] = #name;                          \
 static const ::emscripten::internal::symbol_registrar<name##_symbol> name##_registrar
 
-class val {
+class EMBIND_VISIBILITY_DEFAULT val {
 public:
   // missing operators:
   // * ~ - + ++ --

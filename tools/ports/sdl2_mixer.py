@@ -10,8 +10,10 @@ HASH = '494ccd74540f74e717f7e4f1dc7f96398c0f4b1883ab00c4a76b0c7239bd2c185cb4358a
 
 deps = ['sdl2']
 variants = {
-  'sdl2_mixer_mp3': {'SDL2_MIXER_FORMATS': ["mp3"]},
-  'sdl2_mixer_none': {'SDL2_MIXER_FORMATS': []},
+  'sdl2_mixer-mp3': {'SDL2_MIXER_FORMATS': ['mp3']},
+  'sdl2_mixer-none': {'SDL2_MIXER_FORMATS': []},
+  'sdl2_mixer-mp3-mt': {'SDL2_MIXER_FORMATS': ['mp3'], 'PTHREADS': 1},
+  'sdl2_mixer-none-mt': {'SDL2_MIXER_FORMATS': [], 'PTHREADS': 1},
 }
 
 
@@ -25,20 +27,20 @@ def get_lib_name(settings):
 
   libname = 'libSDL2_mixer'
   if formats != '':
-    libname += '_' + formats
+    libname += '-' + formats
+  if settings.PTHREADS:
+    libname += '-mt'
   libname += '.a'
 
   return libname
 
 
 def get(ports, settings, shared):
-  sdl_build = os.path.join(ports.get_build_dir(), 'sdl2')
-  assert os.path.exists(sdl_build), 'You must use SDL2 to use SDL2_mixer'
   ports.fetch_project('sdl2_mixer', f'https://github.com/libsdl-org/SDL_mixer/archive/{TAG}.zip', sha512hash=HASH)
   libname = get_lib_name(settings)
 
   def create(final):
-    source_path = os.path.join(ports.get_dir(), 'sdl2_mixer', 'SDL_mixer-' + TAG)
+    source_path = ports.get_dir('sdl2_mixer', 'SDL_mixer-' + TAG)
     flags = [
       '-sUSE_SDL=2',
       '-O2',
@@ -68,7 +70,9 @@ def get(ports, settings, shared):
         '-DMUSIC_MID_TIMIDITY',
       ]
 
-    build_dir = ports.clear_project_build('sdl2_mixer')
+    if settings.PTHREADS:
+      flags.append('-pthread')
+
     include_path = os.path.join(source_path, 'include')
     includes = [
       include_path,
@@ -78,7 +82,7 @@ def get(ports, settings, shared):
     ports.build_port(
       source_path,
       final,
-      build_dir,
+      'sdl2_mixer',
       flags=flags,
       exclude_files=[
         'playmus.c',

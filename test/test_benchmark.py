@@ -736,7 +736,7 @@ class benchmark(common.RunnerCore):
     self.do_benchmark('conditionals', src, 'ok', reps=TEST_REPS)
 
   def test_fannkuch(self):
-    src = read_file(test_file('fannkuch.cpp')).replace(
+    src = read_file(test_file('third_party/fannkuch.c')).replace(
       'int n = argc > 1 ? atoi(argv[1]) : 0;',
       '''
         int n;
@@ -823,7 +823,7 @@ class benchmark(common.RunnerCore):
     self.do_benchmark('corrections64', src, 'final:')
 
   def fasta(self, name, double_rep):
-    src = read_file(test_file('fasta.cpp')).replace('double', double_rep)
+    src = read_file(test_file('third_party/fasta.cpp')).replace('double', double_rep)
     src = src.replace('   const size_t n = ( argc > 1 ) ? atoi( argv[1] ) : 512;', '''
       int n;
       int arg = argc > 1 ? argv[1][0] - '0' : 3;
@@ -852,13 +852,13 @@ class benchmark(common.RunnerCore):
     self.do_benchmark('skinning', src, 'blah=0.000000')
 
   def test_havlak(self):
-    src = read_file(test_file('havlak.cpp'))
+    src = read_file(test_file('third_party/havlak.cpp'))
     # This runs many recursive calls (DFS) and thus needs a larger stack
     self.do_benchmark('havlak', src, 'Found', shared_args=['-std=c++11'],
                       emcc_args=['-sSTACK_SIZE=1MB'])
 
   def test_base64(self):
-    src = read_file(test_file('base64.cpp'))
+    src = read_file(test_file('base64.c'))
     self.do_benchmark('base64', src, 'decode')
 
   @non_core
@@ -983,12 +983,7 @@ class benchmark(common.RunnerCore):
     def lib_builder(name, native, env_init):
       # We force recomputation for the native benchmarker because this benchmark
       # uses native_exec=True, so we need to copy the native executable
-      ret = self.get_library(os.path.join('third_party', 'lua_native' if native else 'lua'), [os.path.join('src', 'lua.o'), os.path.join('src', 'liblua.a')], make=['make', 'generic'], configure=None, native=native, cache_name_extra=name, env_init=env_init, force_rebuild=native)
-      if native:
-        return ret
-      shutil.copyfile(ret[0], ret[0] + '.bc')
-      ret[0] += '.bc'
-      return ret
+      return self.get_library(os.path.join('third_party', 'lua_native' if native else 'lua'), [os.path.join('src', 'lua.o'), os.path.join('src', 'liblua.a')], make=['make', 'generic'], configure=None, native=native, cache_name_extra=name, env_init=env_init, force_rebuild=native)
 
     self.do_benchmark('lua_' + benchmark, '', expected,
                       force_c=True, args=[benchmark + '.lua', DEFAULT_ARG],
@@ -1114,7 +1109,7 @@ class benchmark(common.RunnerCore):
       }
     ''' % DEFAULT_ARG)
 
-    def lib_builder(name, native, env_init):
+    def lib_builder(name, native, env_init):  # noqa
       return self.get_poppler_library(env_init=env_init)
 
     # TODO: Fix poppler native build and remove skip_native=True
