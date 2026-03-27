@@ -59,7 +59,7 @@ static DummyForPointer emval_pointer_dummy(42);
 
 val emval_test_instance_pointer() {
   DummyForPointer* p = &emval_pointer_dummy;
-  return val(p);
+  return val(p, allow_raw_pointers());
 }
 
 int emval_test_value_from_instance_pointer(val v) {
@@ -224,13 +224,13 @@ std::u32string get_literal_u32string() {
 
 void force_memory_growth() {
   std::size_t old_size = emscripten_get_heap_size();
-  EM_ASM({"globalThis.oldheap = HEAPU8;"});
+  EM_ASM({"globalThis.oldheap = HEAP8;"});
   assert(val::global("oldheap")["byteLength"].as<size_t>() == old_size);
   emscripten_resize_heap(old_size + EMSCRIPTEN_PAGE_SIZE);
   assert(emscripten_get_heap_size() > old_size);
-  // HEAPU8 on the module should now be rebound, and our oldheap should be
+  // HEAP8 on the module should now be rebound, and our oldheap should be
   // detached
-  assert(val::module_property("HEAPU8")["byteLength"].as<size_t>() > old_size);
+  assert(val::module_property("HEAP8")["byteLength"].as<size_t>() > old_size);
   assert(val::global("oldheap")["byteLength"].as<size_t>() == 0);
 }
 
@@ -327,8 +327,16 @@ ValHolder emval_test_return_ValHolder() {
   return val::object();
 }
 
+ValHolder valholder_from_sum(int x, int y) {
+  return val(x+y);
+}
+
 val valholder_get_value_mixin(const ValHolder& target) {
   return target.getVal();
+}
+
+ValHolder* valholder_get_this_ptr(ValHolder& target) {
+  return &target;
 }
 
 void valholder_set_value_mixin(ValHolder& target, const val& value) {
@@ -1008,6 +1016,18 @@ EnumClass emval_test_take_and_return_EnumClass(EnumClass e) {
   return e;
 }
 
+enum class EnumNum { ONE, TWO };
+
+EnumNum emval_test_take_and_return_EnumNum(EnumNum e) {
+  return e;
+}
+
+enum class EnumStr { ONE, TWO };
+
+EnumStr emval_test_take_and_return_EnumStr(EnumStr e) {
+  return e;
+}
+
 void emval_test_call_function(val v, int i, float f, TupleVector tv, StructVector sv) {
   v(i, f, tv, sv);
 }
@@ -1283,6 +1303,38 @@ std::vector<SmallClass*> emval_test_return_vector_pointers() {
   vec.push_back(new SmallClass());
   return vec;
 }
+
+class CustomIterable {
+ public:
+  CustomIterable() : values_({1, 2, 3}) {}
+
+  unsigned int count() const {
+    return values_.size();
+  }
+
+  int at(unsigned int index) const {
+    return values_[index];
+  }
+
+ private:
+  std::vector<int> values_;
+};
+
+class CustomIterableSizeT {
+ public:
+  CustomIterableSizeT() : values_({10, 20, 30}) {}
+
+  size_t count() const {
+    return values_.size();
+  }
+
+  int at(size_t index) const {
+    return values_[index];
+  }
+
+ private:
+  std::vector<int> values_;
+};
 
 void test_string_with_vec(const std::string& p1, std::vector<std::string>& v1) {
   // THIS DOES NOT WORK -- need to get as val and then call vecFromJSArray
@@ -1888,6 +1940,18 @@ EMSCRIPTEN_BINDINGS(tests) {
   register_vector<std::vector<int>>("IntegerVectorVector");
   register_vector<SmallClass*>("SmallClassPointerVector");
 
+  class_<CustomIterable>("CustomIterable")
+      .constructor<>()
+      .function("count", &CustomIterable::count)
+      .function("at", &CustomIterable::at)
+      .iterable<int>("count", "at");
+
+  class_<CustomIterableSizeT>("CustomIterableSizeT")
+      .constructor<>()
+      .function("count", &CustomIterableSizeT::count)
+      .function("at", &CustomIterableSizeT::at)
+      .iterable<int>("count", "at");
+
   class_<DummyForPointer>("DummyForPointer");
 
   function("mallinfo", &emval_test_mallinfo);
@@ -2005,6 +2069,7 @@ EMSCRIPTEN_BINDINGS(tests) {
   class_<ValHolder>("ValHolder")
     .smart_ptr<std::shared_ptr<ValHolder>>("std::shared_ptr<ValHolder>")
     .constructor<val>()
+    .constructor<ValHolder(int, int)>(&valholder_from_sum, allow_raw_pointers()) // custom signature with policy
     .function("getVal", &ValHolder::getVal)
     .function("getValNonConst", &ValHolder::getValNonConst)
     .function("getConstVal", &ValHolder::getConstVal)
@@ -2012,6 +2077,7 @@ EMSCRIPTEN_BINDINGS(tests) {
     .function("setVal", &ValHolder::setVal)
     .function("getValFunction", std::function<val(const ValHolder&)>(&valholder_get_value_mixin))
     .function("setValFunction", std::function<void(ValHolder&, const val&)>(&valholder_set_value_mixin))
+    .function<ValHolder*(ValHolder&)>("getThisPointer", std::function<ValHolder*(ValHolder&)>(&valholder_get_this_ptr), allow_raw_pointer<ret_val>())
     .function<val(const ValHolder&)>("getValFunctor", std::bind(&valholder_get_value_mixin, _1))
     .function<void(ValHolder&, const val&)>("setValFunctor", std::bind(&valholder_set_value_mixin, _1, _2))
     .property("val", &ValHolder::getVal, &ValHolder::setVal)
@@ -2340,6 +2406,19 @@ EMSCRIPTEN_BINDINGS(tests) {
     ;
   function("emval_test_take_and_return_EnumClass", &emval_test_take_and_return_EnumClass);
 
+  enum_<EnumNum>("EnumNum", enum_value_type::number)
+    .value("ONE", EnumNum::ONE)
+    .value("TWO", EnumNum::TWO)
+    ;
+  function("emval_test_take_and_return_EnumNum", &emval_test_take_and_return_EnumNum);
+
+
+  enum_<EnumStr>("EnumStr", enum_value_type::string)
+    .value("ONE", EnumStr::ONE)
+    .value("TWO", EnumStr::TWO)
+    ;
+  function("emval_test_take_and_return_EnumStr", &emval_test_take_and_return_EnumStr);
+
   function("emval_test_call_function", &emval_test_call_function);
 
   function("emval_test_return_unique_ptr", &emval_test_return_unique_ptr);
@@ -2394,7 +2473,7 @@ EMSCRIPTEN_BINDINGS(tests) {
 
   register_map<std::string, int>("StringIntMap");
   function("embind_test_get_string_int_map", embind_test_get_string_int_map);
-    
+
   register_map<int, std::string, std::greater<int>>("IntStringMapGreater");
   function("embind_test_get_int_string_greater_map", embind_test_get_int_string_greater_map);
 

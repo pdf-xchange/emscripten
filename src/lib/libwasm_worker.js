@@ -4,16 +4,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-#if WASM_WORKERS == 2
-// Helpers for _wasmWorkerBlobUrl used in WASM_WORKERS == 2 mode
-{{{
-  const captureModuleArg = () => MODULARIZE ? '' : 'self.Module=d;';
-  const instantiateModule = () => MODULARIZE ? `${EXPORT_NAME}(d);` : '';
-  const instantiateWasm = () => MINIMAL_RUNTIME ? '' : 'd[`instantiateWasm`]=(i,r)=>{var n=new WebAssembly.Instance(d[`wasm`],i);return r(n,d[`wasm`]);};';
-  null;
-}}}
-#endif
-
 #if WASM_WORKERS
 
 #if !SHARED_MEMORY
@@ -25,36 +15,66 @@
 #if LINKABLE
 #error "-sLINKABLE is not supported with -sWASM_WORKERS"
 #endif
-#if RELOCATABLE
-#error "dynamic linking is not supported with -sWASM_WORKERS"
+#if WASM2JS && MODULARIZE
+#error "-sWASM=0 + -sMODULARIZE + -sWASM_WORKERS is not supported"
 #endif
-#if PROXY_TO_WORKER
-#error "-sPROXY_TO_WORKER is not supported with -sWASM_WORKERS"
+#if EXPORT_ES6 && (MIN_FIREFOX_VERSION < 114 || MIN_CHROME_VERSION < 80 || MIN_SAFARI_VERSION < 150000)
+#error "internal error, feature_matrix should not allow this"
 #endif
-
-{{{
-  const workerSupportsFutexWait = () => AUDIO_WORKLET ? "typeof AudioWorkletGlobalScope === 'undefined'" : '1';
-  const wasmWorkerJs = `
-#if WASM_WORKERS == 2
-    _wasmWorkerBlobUrl
-#elif MINIMAL_RUNTIME
-    Module['$wb']
-#else
-    locateFile('${WASM_WORKER_FILE}')
-#endif
-`;
-  null;
-}}}
 
 #endif // ~WASM_WORKERS
+
+{{{
+  const workerSupportsFutexWait = () => AUDIO_WORKLET ? "!ENVIRONMENT_IS_AUDIO_WORKLET" : '1';
+  const wasmWorkerJs = `
+#if MINIMAL_RUNTIME
+#if ENVIRONMENT_MAY_BE_NODE
+    Module['js'] || './${TARGET_JS_NAME}'
+#else
+    Module['js']
+#endif
+#else
+    locateFile('${TARGET_JS_NAME}')
+#endif
+`;
+  const wasmWorkerOptions = `{
+#if EXPORT_ES6
+  'type': 'module',
+#endif
+#if ENVIRONMENT_MAY_BE_NODE
+  // This is the way that we signal to the node worker that it is hosting
+  // a Wasm Worker.
+  'workerData': 'em-ww',
+#endif
+#if ENVIRONMENT_MAY_BE_WEB || ENVIRONMENT_MAY_BE_WORKER
+  // This is the way that we signal to the Web Worker that it is hosting
+  // a Wasm Worker.
+#if ASSERTIONS
+  'name': 'em-ww-' + _wasmWorkersID,
+#else
+  'name': 'em-ww',
+#endif
+#endif
+}`;
+}}}
+
 
 
 addToLibrary({
   $_wasmWorkers: {},
+#if PTHREADS
+  // When the build contains both pthreads and Wasm Workers, offset the
+  // Wasm Worker ID space to avoid collisions with pthread TIDs (which start
+  // at 42). We use `1 << 30` since it's ~1/2 way through `pid_t` space,
+  // essentially giving pthreads the first 1/2 of the range and wasm workers the
+  // second half.
+  $_wasmWorkersID: {{{ 1 << 30 }}},
+#else
   $_wasmWorkersID: 1,
+#endif
 
   // Starting up a Wasm Worker is an asynchronous operation, hence if the parent
-  // thread performs any postMessage()-based wasm function calls s to the
+  // thread performs any postMessage()-based wasm function calls to the
   // Worker, they must be delayed until the async startup has finished, after
   // which these postponed function calls can be dispatched.
   $_wasmWorkerDelayedMessageQueue: [],
@@ -85,10 +105,14 @@ addToLibrary({
 #endif
   ],
   $_wasmWorkerInitializeRuntime: () => {
-    let m = Module;
 #if ASSERTIONS
-    assert(m['sb'] % 16 == 0);
-    assert(m['sz'] % 16 == 0);
+    assert(wwParams);
+    assert(wwParams.wwID);
+    assert(wwParams.stackLowestAddress % 16 == 0);
+    assert(wwParams.stackSize % 16 == 0);
+#endif
+#if RUNTIME_DEBUG
+    dbg("wasmWorkerInitializeRuntime wwID:", wwParams.wwID);
 #endif
 
 #if !MINIMAL_RUNTIME && isSymbolNeeded('$noExitRuntime')
@@ -103,11 +127,12 @@ addToLibrary({
     // already exists".  So for now, invoke this function from JS side. TODO:
     // remove this in the future.  Note that this call is not exactly correct,
     // since this limit will include the TLS slot, that will be part of the
-    // region between m['sb'] and m['sz'], so we need to fix up the call below.
-    ___set_stack_limits(m['sb'] + m['sz'], m['sb']);
+    // region between wwParams.stackLowestAddress and wwParams.stackSize, so we
+    // need to fix up the call below.
+    ___set_stack_limits(wwParams.stackLowestAddress + wwParams.stackSize, wwParams.stackLowestAddress);
 #endif
     // Run the C side Worker initialization for stack and TLS.
-    __emscripten_wasm_worker_initialize(m['sb'], m['sz']);
+    __emscripten_wasm_worker_initialize(wwParams.wwID, wwParams.stackLowestAddress, wwParams.stackSize);
 #if PTHREADS
     // Record the pthread configuration, and whether this Wasm Worker supports synchronous blocking in emscripten_futex_wait().
     // (regular Wasm Workers do, AudioWorklets don't)
@@ -125,9 +150,14 @@ addToLibrary({
     writeStackCookie();
 #endif
 
+#if EMBIND
+    // Embind must initialize itself on all threads, as it generates support JS.
+    __embind_initialize_bindings();
+#endif
+
 #if AUDIO_WORKLET
     // Audio Worklets do not have postMessage()ing capabilities.
-    if (typeof AudioWorkletGlobalScope === 'undefined') {
+    if (!ENVIRONMENT_IS_AUDIO_WORKLET) {
 #endif
       // The Wasm Worker runtime is now up, so we can start processing
       // any postMessage function calls that have been received. Drop the temp
@@ -144,20 +174,9 @@ addToLibrary({
 #endif
   },
 
-#if WASM_WORKERS == 2
-  // In WASM_WORKERS == 2 build mode, we create the Wasm Worker global scope
-  // script from a string bundled in the main application JS file. This
-  // simplifies the number of deployed JS files with the app, but has a downside
-  // that the generated build output will no longer be csp-eval compliant.
-  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/script-src#unsafe_eval_expressions
-  $_wasmWorkerBlobUrl: "URL.createObjectURL(new Blob(['onmessage=function(d){onmessage=null;d=d.data;{{{ captureModuleArg() }}}{{{ instantiateWasm() }}}importScripts(d.js);{{{ instantiateModule() }}}d.wasm=d.mem=d.js=0;}'],{type:'application/javascript'}))",
-#endif
   _emscripten_create_wasm_worker__deps: [
     '$_wasmWorkers', '$_wasmWorkersID',
     '$_wasmWorkerAppendToQueue', '$_wasmWorkerRunPostMessage',
-#if WASM_WORKERS == 2
-    '$_wasmWorkerBlobUrl',
-#endif
 #if ASSERTIONS
     'emscripten_has_threading_support',
 #endif
@@ -169,7 +188,7 @@ if (ENVIRONMENT_IS_WASM_WORKER
   && !ENVIRONMENT_IS_AUDIO_WORKLET
 #endif
   ) {
-  _wasmWorkers[0] = this;
+  _wasmWorkers[0] = globalThis;
   addEventListener("message", _wasmWorkerAppendToQueue);
 }`,
   _emscripten_create_wasm_worker: (stackLowestAddress, stackSize) => {
@@ -182,36 +201,23 @@ if (ENVIRONMENT_IS_WASM_WORKER
     let worker;
 #if TRUSTED_TYPES
     // Use Trusted Types compatible wrappers.
-    if (typeof trustedTypes != 'undefined' && trustedTypes.createPolicy) {
+    if (globalThis.trustedTypes?.createPolicy) {
       var p = trustedTypes.createPolicy(
           'emscripten#workerPolicy1', { createScriptURL: (ignored) => {{{ wasmWorkerJs }}}}
       );
-      worker = _wasmWorkers[_wasmWorkersID] = new Worker(p.createScriptURL('ignored'));
+      worker = _wasmWorkers[_wasmWorkersID] = new Worker(p.createScriptURL('ignored'), {{{ wasmWorkerOptions }}});
     } else
 #endif
-    worker = _wasmWorkers[_wasmWorkersID] = new Worker({{{ wasmWorkerJs }}});
+    worker = _wasmWorkers[_wasmWorkersID] = new Worker({{{ wasmWorkerJs }}}, {{{ wasmWorkerOptions }}});
     // Craft the Module object for the Wasm Worker scope:
     worker.postMessage({
       // Signal with a non-zero value that this Worker will be a Wasm Worker,
       // and not the main browser thread.
-      '$ww': _wasmWorkersID,
-#if MINIMAL_RUNTIME
-      'wasm': Module['wasm'],
-      'js': Module['js'],
-      'mem': wasmMemory,
-#else
-      'wasm': wasmModule,
-      'js': Module['mainScriptUrlOrBlob'] || _scriptName,
-      'wasmMemory': wasmMemory,
-#endif
-      'sb': stackLowestAddress, // sb = stack bottom (lowest stack address, SP points at this when stack is full)
-      'sz': stackSize,          // sz = stack size
-#if USE_OFFSET_CONVERTER
-      'wasmOffsetData': wasmOffsetConverter,
-#endif
-#if LOAD_SOURCE_MAP
-      'wasmSourceMapData': wasmSourceMap,
-#endif
+      wwID: _wasmWorkersID,
+      wasm: wasmModule,
+      wasmMemory,
+      stackLowestAddress, // sb = stack bottom (lowest stack address, SP points at this when stack is full)
+      stackSize,          // sz = stack size
     });
     worker.onmessage = _wasmWorkerRunPostMessage;
 #if ENVIRONMENT_MAY_BE_NODE
@@ -219,6 +225,9 @@ if (ENVIRONMENT_IS_WASM_WORKER
       /** @suppress {checkTypes} */
       worker.on('message', (msg) => worker.onmessage({ data: msg }));
     }
+#endif
+#if RUNTIME_DEBUG
+    dbg("done _emscripten_create_wasm_worker", _wasmWorkersID)
 #endif
     return _wasmWorkersID++;
   },
@@ -240,16 +249,6 @@ if (ENVIRONMENT_IS_WASM_WORKER
     Object.values(_wasmWorkers).forEach((worker) => worker.terminate());
     _wasmWorkers = {};
   },
-
-  emscripten_current_thread_is_wasm_worker: () => {
-#if WASM_WORKERS
-    return ENVIRONMENT_IS_WASM_WORKER;
-#else
-    // implicit return 0;
-#endif
-  },
-
-  emscripten_wasm_worker_self_id: () => Module['$ww'],
 
   emscripten_wasm_worker_post_function_v: (id, funcPtr) => {
     _wasmWorkers[id].postMessage({'_wsc': funcPtr, 'x': [] }); // "WaSm Call"
@@ -291,35 +290,28 @@ if (ENVIRONMENT_IS_WASM_WORKER
 
   emscripten_navigator_hardware_concurrency: () => {
 #if ENVIRONMENT_MAY_BE_NODE
-    if (ENVIRONMENT_IS_NODE) return require('os').cpus().length;
+    if (ENVIRONMENT_IS_NODE) return require('node:os').cpus().length;
 #endif
     return navigator['hardwareConcurrency'];
   },
 
-  emscripten_atomics_is_lock_free: (width) => {
-    return Atomics.isLockFree(width);
-  },
-
   emscripten_lock_async_acquire__deps: ['$polyfillWaitAsync'],
   emscripten_lock_async_acquire: (lock, asyncWaitFinished, userData, maxWaitMilliseconds) => {
-    let dispatch = (val, ret) => {
-      setTimeout(() => {
-        {{{ makeDynCall('vpiip', 'asyncWaitFinished') }}}(lock, val, /*waitResult=*/ret, userData);
-      }, 0);
-    };
     let tryAcquireLock = () => {
       do {
         var val = Atomics.compareExchange(HEAP32, {{{ getHeapOffset('lock', 'i32') }}}, 0/*zero represents lock being free*/, 1/*one represents lock being acquired*/);
-        if (!val) return dispatch(0, 0/*'ok'*/);
+        if (!val) return {{{ makeDynCall('vpiip', 'asyncWaitFinished') }}}(lock, 0, 0/*'ok'*/, userData);
         var wait = Atomics.waitAsync(HEAP32, {{{ getHeapOffset('lock', 'i32') }}}, val, maxWaitMilliseconds);
       } while (wait.value === 'not-equal');
 #if ASSERTIONS
       assert(wait.async || wait.value === 'timed-out');
 #endif
       if (wait.async) wait.value.then(tryAcquireLock);
-      else dispatch(val, 2/*'timed-out'*/);
+      else return {{{ makeDynCall('vpiip', 'asyncWaitFinished') }}}(lock, val, 2/*'timed-out'*/, userData);
     };
-    tryAcquireLock();
+    // Asynchronously dispatch acquiring the lock so that we have uniform control flow in both
+    // cases when the lock is acquired, and when it needs to wait.
+    setTimeout(tryAcquireLock);
   },
 
   emscripten_semaphore_async_acquire__deps: ['$polyfillWaitAsync'],
@@ -346,5 +338,20 @@ if (ENVIRONMENT_IS_WASM_WORKER
       else dispatch(-1/*idx*/, 2/*'timed-out'*/);
     };
     tryAcquireSemaphore();
-  }
+  },
+
+#if !PTHREADS
+  // When pthreads are used we call `__set_thread_state` immediately on worker
+  // creation.  When wasm workers is used without pthreads, we call
+  // `__set_thread_state` lazily to save code size for programs that don't use
+  // the threads state.
+  __do_set_thread_state__deps: ['__set_thread_state'],
+  __do_set_thread_state: (tb) => {
+    ___set_thread_state(
+      /*thread_ptr=*/0,
+      /*is_main_thread=*/!ENVIRONMENT_IS_WORKER,
+      /*is_runtime_thread=*/!ENVIRONMENT_IS_WASM_WORKER,
+      /*supports_wait=*/ENVIRONMENT_IS_WORKER && {{{ workerSupportsFutexWait() }}});
+  },
+#endif
 });

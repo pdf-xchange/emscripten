@@ -32,7 +32,7 @@ void test_rename() {
   printf("F_OK('%s'): %d\n", "filetorename", access("filetorename", F_OK));
   printf("F_OK('%s'): %d\n", "renamedfile", access("renamedfile", F_OK));
 
-  // Same againt with faccessat
+  // Same again with faccessat
   printf("F_OK('%s'): %d\n", "filetorename", faccessat(AT_FDCWD, "filetorename", F_OK, 0));
   printf("F_OK('%s'): %d\n", "renamedfile", faccessat(AT_FDCWD, "renamedfile", F_OK, 0));
 }
@@ -42,17 +42,17 @@ void test_fchmod() {
   chmod("fchmodtest", S_IRUGO | S_IWUGO);
   struct stat fileStats;
   stat("fchmodtest", &fileStats);
-  int mode = fileStats.st_mode & 0777;
-  // Allow S_IXUGO in addtion to S_IWUGO because on windows
+  int mode = fileStats.st_mode & 0o777;
+  // Allow S_IXUGO in addition to S_IWUGO because on windows
   // we always report the execute bit.
   assert(mode == (S_IRUGO | S_IWUGO) || mode == (S_IRUGO | S_IWUGO | S_IXUGO));
 
   EM_ASM(
     var fchmodstream = FS.open("fchmodtest", "r");
-    FS.fchmod(fchmodstream.fd, 0777);
+    FS.fchmod(fchmodstream.fd, 0o777);
   );
   stat("fchmodtest", &fileStats);
-  assert((fileStats.st_mode & 0777) == 0777);
+  assert((fileStats.st_mode & 0o777) == 0o777);
 }
 
 void test_lchmod() {
@@ -61,7 +61,7 @@ void test_lchmod() {
   // so skip this part of the test.
   EM_ASM(
     FS.symlink('writeable', 'symlinkfile');
-    FS.lchmod('symlinkfile', 0777);
+    FS.lchmod('symlinkfile', 0o777);
   );
 
   struct stat symlinkStats;
@@ -80,21 +80,21 @@ void test_chmod_errors() {
   EM_ASM(
     var ex;
     try {
-      FS.chmod("nonexistent", 0777);
+      FS.chmod("nonexistent", 0o777);
     } catch (err) {
       ex = err;
     }
     assert(ex.name === "ErrnoError" && ex.errno === 44 /* ENOENT */);
 
     try {
-      FS.fchmod(99, 0777);
+      FS.fchmod(99, 0o777);
     } catch (err) {
       ex = err;
     }
     assert(ex.name === "ErrnoError" && ex.errno === 8 /* EBADF */);
 
     try {
-      FS.lchmod("nonexistent", 0777);
+      FS.lchmod("nonexistent", 0o777);
     } catch (err) {
       ex = err;
     }

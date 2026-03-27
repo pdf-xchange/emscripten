@@ -16,14 +16,28 @@ variants = {
   'sdl2_mixer-none-mt': {'SDL2_MIXER_FORMATS': [], 'PTHREADS': 1},
 }
 
+OPTIONS = {
+  'formats': 'A comma separated list of formats (ex: --use-port=sdl2_mixer:formats=ogg,mp3)',
+}
+
+SUPPORTED_FORMATS = {'ogg', 'mp3', 'mod', 'mid'}
+
+# user options (from --use-port)
+opts: dict[str, set] = {
+  'formats': set(),
+}
+
 
 def needed(settings):
   return settings.USE_SDL_MIXER == 2
 
 
+def get_formats(settings):
+  return opts['formats'].union(settings.SDL2_MIXER_FORMATS)
+
+
 def get_lib_name(settings):
-  settings.SDL2_MIXER_FORMATS.sort()
-  formats = '-'.join(settings.SDL2_MIXER_FORMATS)
+  formats = '-'.join(sorted(get_formats(settings)))
 
   libname = 'libSDL2_mixer'
   if formats != '':
@@ -41,31 +55,33 @@ def get(ports, settings, shared):
 
   def create(final):
     source_path = ports.get_dir('sdl2_mixer', 'SDL_mixer-' + TAG)
+
+    formats = get_formats(settings)
+
     flags = [
       '-sUSE_SDL=2',
-      '-O2',
       '-DMUSIC_WAV',
     ]
 
-    if "ogg" in settings.SDL2_MIXER_FORMATS:
+    if "ogg" in formats:
       flags += [
         '-sUSE_VORBIS',
         '-DMUSIC_OGG',
       ]
 
-    if "mp3" in settings.SDL2_MIXER_FORMATS:
+    if "mp3" in formats:
       flags += [
         '-sUSE_MPG123',
         '-DMUSIC_MP3_MPG123',
       ]
 
-    if "mod" in settings.SDL2_MIXER_FORMATS:
+    if "mod" in formats:
       flags += [
         '-sUSE_MODPLUG',
         '-DMUSIC_MOD_MODPLUG',
       ]
 
-    if "mid" in settings.SDL2_MIXER_FORMATS:
+    if "mid" in formats:
       flags += [
         '-DMUSIC_MID_TIMIDITY',
       ]
@@ -77,7 +93,7 @@ def get(ports, settings, shared):
     includes = [
       include_path,
       os.path.join(source_path, 'src'),
-      os.path.join(source_path, 'src', 'codecs')
+      os.path.join(source_path, 'src', 'codecs'),
     ]
     ports.build_port(
       source_path,
@@ -108,15 +124,26 @@ def clear(ports, settings, shared):
 
 def process_dependencies(settings):
   settings.USE_SDL = 2
-  if "ogg" in settings.SDL2_MIXER_FORMATS:
+  formats = get_formats(settings)
+  if "ogg" in formats:
     deps.append('vorbis')
     settings.USE_VORBIS = 1
-  if "mp3" in settings.SDL2_MIXER_FORMATS:
+  if "mp3" in formats:
     deps.append('mpg123')
     settings.USE_MPG123 = 1
-  if "mod" in settings.SDL2_MIXER_FORMATS:
+  if "mod" in formats:
     deps.append('libmodplug')
     settings.USE_MODPLUG = 1
+
+
+def handle_options(options, error_handler):
+  formats = options['formats'].split(',')
+  for format in formats:
+    format = format.lower().strip()
+    if format not in SUPPORTED_FORMATS:
+      error_handler(f'{format} is not a supported format')
+    else:
+      opts['formats'].add(format)
 
 
 def show():

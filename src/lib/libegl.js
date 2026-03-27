@@ -22,7 +22,6 @@ const eglDefaultDisplay = 62000;
 const eglDefaultConfig = 62002;
 // Magic ID for Emscripten EGLContext
 const eglDefaultContext = 62004;
-null;
 }}}
 
 var LibraryEGL = {
@@ -508,6 +507,8 @@ var LibraryEGL = {
   eglGetError: () => EGL.errorCode,
 
   // EGLAPI const char * EGLAPIENTRY eglQueryString(EGLDisplay dpy, EGLint name);
+  // The allocated strings are cached and never freed.
+  eglQueryString__noleakcheck: true,
   eglQueryString__deps: ['$stringToNewUTF8'],
   eglQueryString__proxy: 'sync',
   eglQueryString: (display, name) => {
@@ -636,10 +637,6 @@ var LibraryEGL = {
   eglSwapBuffers__deps: ['$GLctx'],
   eglSwapBuffers__proxy: 'sync',
   eglSwapBuffers: (dpy, surface) => {
-#if PROXY_TO_WORKER
-    if (Browser.doSwapBuffers) Browser.doSwapBuffers();
-#endif
-
     if (!EGL.defaultDisplayInitialized) {
       EGL.setErrorCode(0x3001 /* EGL_NOT_INITIALIZED */);
     } else if (!GLctx) {

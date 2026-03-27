@@ -64,7 +64,7 @@ addToLibrary({
     return value;
   },
   $set_funcref: (loc, index, value) => {
-    dbg('set_afuncef ' + [loc, index, value]);
+    dbg('set_funcref ' + [loc, index, value]);
     return value;
   },
   $set_externref: (loc, index, value) => {
@@ -123,6 +123,14 @@ addToLibrary({
     dbg('store_val_f64 ' + [loc, value]);
     return value;
   },
+  $memory_grow_pre: (loc, delta) => {
+    dbg('memory_grow_pre ' + [loc, delta]);
+    return delta;
+  },
+  $memory_grow_post: (loc, result) => {
+    dbg('memory_grow_post ' + [loc, result]);
+    return result;
+  },
 });
 
 extraLibraryFuncs.push(
@@ -153,4 +161,6 @@ extraLibraryFuncs.push(
   '$store_val_i64',
   '$store_val_f32',
   '$store_val_f64',
+  '$memory_grow_pre',
+  '$memory_grow_post',
 );

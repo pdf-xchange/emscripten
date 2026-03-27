@@ -214,7 +214,7 @@ void test_fs_rmdir() {
     } catch (err) {
     ex = err;
     }
-    assert(ex.name === "ErrnoError" && ex.errno === 44 /* ENOEN */);
+    assert(ex.name === "ErrnoError" && ex.errno === 44 /* ENOENT */);
   );
 }
 
@@ -240,19 +240,19 @@ EM_JS(void, test_fs_close, (), {
 
 void test_fs_mknod() {
   EM_ASM(
-    FS.mknod("mknodtest", 0100000 | 0777 /* S_IFREG | S_RWXU | S_RWXG | S_RWXO */);
+    FS.mknod("mknodtest", 0o100000 | 0o777 /* S_IFREG | S_RWXU | S_RWXG | S_RWXO */);
 
-    FS.create("createtest", 0400 /* S_IRUSR */);
+    FS.create("createtest", 0o400 /* S_IRUSR */);
   );
   struct stat s;
   stat("mknodtest", &s);
 
   assert(S_ISREG(s.st_mode));
-  assert(s.st_mode & 0777);
+  assert(s.st_mode & 0o777);
 
   stat("createtest", &s);
   assert(S_ISREG(s.st_mode));
-  assert(s.st_mode & 0400);
+  assert(s.st_mode & 0o400);
 
   remove("mknodtest");
   remove("createtest");
@@ -330,7 +330,7 @@ void test_fs_mmap() {
     assert(stream);
 
     var mapped = FS.mmap(stream, 12, 0, 1 | 2 /* PROT_READ | PROT_WRITE */, 1 /* MAP_SHARED */);
-    var ret = new Uint8Array(Module.HEAPU8.subarray(mapped.ptr, mapped.ptr + 12));
+    var ret = new Uint8Array(HEAPU8.subarray(mapped.ptr, mapped.ptr + 12));
     var fileContents = "";
     for (var i = 0; i < 12; i++) {
       fileContents += String.fromCharCode(ret[i]);
@@ -341,7 +341,7 @@ void test_fs_mmap() {
     ret[9] = 'x'.charCodeAt(0);
     ret[10] = 'y'.charCodeAt(0);
     ret[11] = 'z'.charCodeAt(0);
-    Module.HEAPU8.set(ret, mapped.ptr);
+    HEAPU8.set(ret, mapped.ptr);
 
     // The WasmFS msync syscall requires a pointer to the mapped memory, while the legacy JS API takes in any Uint8Array
     // buffer to write to a file.
@@ -382,7 +382,7 @@ void test_fs_mmap() {
 void test_fs_mkdirTree() {
   EM_ASM(
     FS.mkdirTree("/test1/test2/test3"); // Abs path
-    FS.mkdirTree("/readable", 0400 /* S_IRUSR */);
+    FS.mkdirTree("/readable", 0o400 /* S_IRUSR */);
   );
 
   struct stat s;
@@ -394,7 +394,7 @@ void test_fs_mkdirTree() {
   assert(S_ISDIR(s.st_mode));
 
   assert(stat("/readable", &s) == 0);
-  assert(s.st_mode & 0400 /* S_IRUSR */);
+  assert(s.st_mode & 0o400 /* S_IRUSR */);
 
   EM_ASM(
     var ex;
